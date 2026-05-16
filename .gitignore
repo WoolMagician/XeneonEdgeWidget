@@ -29,6 +29,8 @@ server/events.json
 server/settings.json
 server/tasks.json
 server/uploads/
+server/audioctl/bin/
+server/audioctl/obj/
 
 
 # Logs

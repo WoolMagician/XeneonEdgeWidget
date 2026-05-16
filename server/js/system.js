@@ -95,7 +95,13 @@ function applyWeather(data) {
     pill.classList.add('offline');
     $('weather-temp').textContent = '--°';
     $('weather-place').textContent = t('weather_unavailable');
+    const centerTemp = $('center-weather-temp');
+    const centerPlace = $('center-weather-place');
+    if (centerTemp) centerTemp.textContent = '--°';
+    if (centerPlace) centerPlace.textContent = t('weather_unavailable');
     pill.title = t('weather_unavailable');
+    fitWeatherChipText();
+    requestAnimationFrame(fitWeatherChipText);
     renderWeatherDetails();
     return;
   }
@@ -103,11 +109,70 @@ function applyWeather(data) {
   pill.classList.toggle('offline', !!data.stale);
   $('weather-temp').textContent = `${data.tempC}°`;
   $('weather-place').textContent = data.location || t('weather_local');
+  const centerTemp = $('center-weather-temp');
+  const centerPlace = $('center-weather-place');
+  if (centerTemp) centerTemp.textContent = `${data.tempC}°`;
+  if (centerPlace) centerPlace.textContent = data.location || t('weather_local');
   const parts = [data.condition, data.location, data.feelsC != null ? `${t('weather_feels')} ${data.feelsC}°C` : '']
     .filter(Boolean);
   pill.title = parts.length ? parts.join(' · ') : t('weather_title');
+  fitWeatherChipText();
+  requestAnimationFrame(fitWeatherChipText);
   renderWeatherDetails();
 }
+
+function fitWeatherChipText() {
+  const pill = $('weather-pill');
+  const tempEl = $('weather-temp');
+  const placeEl = $('weather-place');
+  if (!pill || !tempEl || !placeEl) return;
+
+  // Reset to CSS sizes before fitting.
+  tempEl.style.fontSize = '';
+  placeEl.style.fontSize = '';
+
+  const pillStyle = window.getComputedStyle(pill);
+  const padLeft = Number.parseFloat(pillStyle.paddingLeft) || 0;
+  const padRight = Number.parseFloat(pillStyle.paddingRight) || 0;
+  const gap = Number.parseFloat(pillStyle.columnGap || pillStyle.gap) || 0;
+  const icon = pill.querySelector('svg');
+  const iconWidth = icon ? icon.getBoundingClientRect().width : 0;
+  const innerWidth = Math.max(24, pill.clientWidth - padLeft - padRight);
+
+  const tempBase = Number.parseFloat(window.getComputedStyle(tempEl).fontSize) || 28;
+  const placeBase = Number.parseFloat(window.getComputedStyle(placeEl).fontSize) || 18;
+  const tempMin = Math.max(14, Math.round(tempBase * 0.60));
+  const placeMin = Math.max(12, Math.round(placeBase * 0.70));
+  let tempSize = tempBase;
+  let placeSize = placeBase;
+
+  const applySizes = () => {
+    tempEl.style.fontSize = `${tempSize}px`;
+    placeEl.style.fontSize = `${placeSize}px`;
+    const tempWidth = tempEl.scrollWidth;
+    const placeMax = Math.max(16, Math.floor(innerWidth - iconWidth - tempWidth - (gap * 2) - 2));
+    placeEl.style.maxWidth = `${placeMax}px`;
+    const total = iconWidth + (gap * 2) + tempEl.scrollWidth + placeEl.scrollWidth;
+    return { total, placeMax };
+  };
+
+  let metrics = applySizes();
+  while ((metrics.total > innerWidth || placeEl.scrollWidth > metrics.placeMax) && (tempSize > tempMin || placeSize > placeMin)) {
+    const tempOverflow = tempEl.scrollWidth / Math.max(1, innerWidth);
+    const placeOverflow = placeEl.scrollWidth / Math.max(1, metrics.placeMax);
+
+    if ((placeOverflow >= tempOverflow && placeSize > placeMin) || tempSize <= tempMin) {
+      placeSize -= 1;
+    } else if (tempSize > tempMin) {
+      tempSize -= 1;
+    } else {
+      break;
+    }
+    metrics = applySizes();
+  }
+}
+
+window.addEventListener('resize', fitWeatherChipText);
 
 function weatherDisplayValue(value, suffix = '') {
   return value === null || value === undefined || value === '' ? '--' : `${value}${suffix}`;

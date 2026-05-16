@@ -1,14 +1,16 @@
 'use strict';
 
 function setSystemTab(name, options = {}) {
-  if (name !== 'main' && name !== 'net') return;
+  if (name !== 'mixer' && name !== 'main' && name !== 'net') return;
   currentSysTab = name;
   document.querySelectorAll('.sys-tab').forEach(b => {
     b.classList.toggle('active', b.dataset.systab === name);
   });
+  const mixer = document.getElementById('sys-grid-mixer');
   const main = document.getElementById('sys-grid-main');
   const net  = document.getElementById('sys-grid-net');
   const cap  = document.getElementById('gpu-caption');
+  if (mixer) mixer.hidden = (name !== 'mixer');
   if (main) main.hidden = (name !== 'main');
   if (net)  net.hidden  = (name !== 'net');
   if (cap)  cap.style.display = (name === 'main') ? '' : 'none';

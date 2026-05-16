@@ -45,14 +45,9 @@ let systemDisks = null;
 let diskIndex = 0;
 
 // ── Network panel state ───────────────────────────────────────
-let currentSysTab = 'main';
+let currentSysTab = 'mixer';
 let fetchingNetwork = false;
 let netInterval = null;
-
-// ── Notes state ───────────────────────────────────────────────
-let notesSaveTimer = null;
-let notesStatusTimer = null;
-let notesLoaded = false;
 
 // ── Tasks state ────────────────────────────────────────────────
 let tasksData = [];
@@ -86,6 +81,9 @@ const micVolVal = $('mic-vol-val');
 const volMuteBtn = $('vol-mute-btn');
 const spkIconOn = $('spk-icon-on');
 const spkIconOff = $('spk-icon-off');
+const appMixerList = $('app-mixer-list');
+const appMixerShell = appMixerList ? appMixerList.closest('.app-mixer-shell') : null;
+const appMixerEmpty = $('app-mixer-empty');
 
 // ── DOM refs: picker ──────────────────────────────────────────
 const pickerOverlay = $('picker-overlay');

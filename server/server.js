@@ -11,11 +11,15 @@ let cachedSpeakerName = null; // short endpoint name — for SetVolume/ToggleMut
 let cachedMicId       = null;
 
 const SVV = path.join(__dirname, 'soundvolumeview-x64', 'SoundVolumeView.exe');
+const AUDIOCTL_PROJECT = path.join(__dirname, 'audioctl', 'AudioCtl.csproj');
+const AUDIOCTL_DLL = path.join(__dirname, 'audioctl', 'bin', 'Release', 'net9.0-windows', 'AudioCtl.dll');
+const DOTNET_BIN = process.env.XEH_DOTNET || 'dotnet';
 const MEDIA_SCRIPT = path.join(__dirname, 'media.ps1');
 const CPU_TEMP_SCRIPT = path.join(__dirname, 'cpu-temp.ps1');
 const GPU_SCRIPT = path.join(__dirname, 'gpu.ps1');
 const NETWORK_SCRIPT = path.join(__dirname, 'network.ps1');
 const WINDOWS_SCRIPT = path.join(__dirname, 'windows.ps1');
+const SHORTCUT_SCRIPT = path.join(__dirname, 'shortcut.ps1');
 const NOTES_FILE = path.join(__dirname, 'notes.txt');
 const EVENTS_FILE = path.join(__dirname, 'events.json');
 const TASKS_FILE = path.join(__dirname, 'tasks.json');
@@ -25,6 +29,19 @@ const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const BACKGROUND_MAX_BYTES = 200 * 1024 * 1024;
 const BACKGROUND_TRANSCODE_TIMEOUT_MS = 10 * 60 * 1000;
 const SETTINGS_MIN_PANEL_ALPHA = 0.18;
+const NEWS_DEFAULT_FEED_URL = 'https://news.google.com/rss/search?q=notizie%20mondo&hl=it-IT&gl=IT&ceid=IT:it&num=10';
+const NEWS_MIN_REFRESH_MINUTES = 1;
+const NEWS_MAX_REFRESH_MINUTES = 120;
+const NEWS_DEFAULT_REFRESH_MINUTES = 10;
+const NEWS_MIN_RESULTS = 1;
+const NEWS_MAX_RESULTS = 50;
+const NEWS_DEFAULT_RESULTS = 10;
+const NEWS_SOURCE_DOMAIN_OVERRIDES = new Map([
+  ['ansa', 'ansa.it'],
+  ['ansait', 'ansa.it'],
+  ['skytg24', 'tg24.sky.it'],
+  ['skytg24it', 'tg24.sky.it'],
+]);
 const BACKGROUND_MIME_BY_EXT = new Map([
   ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.png', 'image/png'],
   ['.webp', 'image/webp'], ['.gif', 'image/gif'], ['.mp4', 'video/mp4'], ['.webm', 'video/webm'],
@@ -32,7 +49,9 @@ const BACKGROUND_MIME_BY_EXT = new Map([
 const BACKGROUND_EXT_BY_MIME = new Map([...BACKGROUND_MIME_BY_EXT.entries()].map(([ext, mime]) => [mime, ext]));
 
 // CSV column indices for SoundVolumeView /scomma (no header row)
-const F = { NAME: 0, TYPE: 1, DIR: 2, DEVICE_NAME: 3, DEFAULT: 4, STATE: 7, MUTED: 8, VOL_PCT: 10, CLI_ID: 18, WINDOW_TITLE: 21 };
+const F = { NAME: 0, TYPE: 1, DIR: 2, DEVICE_NAME: 3, DEFAULT: 4, STATE: 7, MUTED: 8, VOL_PCT: 10, ITEM_ID: 17, CLI_ID: 18, WINDOW_TITLE: 21 };
+let audioCtlReady = fs.existsSync(AUDIOCTL_DLL);
+let audioCtlBuildInFlight = null;
 
 function parseJsonOutput(stdout) {
   const start = stdout.indexOf('{');
@@ -121,15 +140,78 @@ setInterval(() => {
 let gpuCache = { gpu: null, gpuName: null, gpuTemp: null, updatedAt: 0 };
 let cpuTempCache = { cpuTemp: null, updatedAt: 0 };
 let mediaCache = { data: null, updatedAt: 0 };
+let mediaTimelineState = {
+  key: '',
+  duration: 0,
+  status: 'Paused',
+  anchorPosition: 0,
+  anchorAt: 0,
+  lastRawPosition: 0,
+};
 let weatherCache = { data: null, updatedAt: 0, cacheKey: '' };
+let newsCache = { items: [], updatedAt: 0, feedUrl: NEWS_DEFAULT_FEED_URL, maxResults: NEWS_DEFAULT_RESULTS };
 let gpuPending = null;
 let cpuTempPending = null;
 let mediaPending = null;
 let weatherPending = null;
-const MEDIA_CACHE_MS = 1200;
+let newsPending = null;
+let windowAppsPending = null;
+const MEDIA_CACHE_MS = 250;
 const WEATHER_CACHE_MS = 10 * 60 * 1000;
+const NEWS_CACHE_MS = 5 * 60 * 1000;
+const WINDOW_APPS_CACHE_MS = 15 * 1000;
+const AUDIO_OVERRIDE_TTL_MS = 6000;
 const artworkCache = new Map();
 const weatherLocationCache = new Map();
+const windowAppsCache = { apps: [], updatedAt: 0 };
+let speakerAudioOverride = { volume: null, muted: null, expiresAt: 0 };
+let micAudioOverride = { volume: null, muted: null, expiresAt: 0 };
+const appAudioOverrides = new Map();
+
+function withOverride(previous, patch, ttlMs = AUDIO_OVERRIDE_TTL_MS) {
+  const now = Date.now();
+  return {
+    volume: typeof patch.volume === 'number' ? Math.max(0, Math.min(100, Math.round(patch.volume))) : previous.volume,
+    muted: typeof patch.muted === 'boolean' ? patch.muted : previous.muted,
+    expiresAt: now + Math.max(250, ttlMs),
+  };
+}
+
+function setSpeakerAudioOverride(patch, ttlMs = AUDIO_OVERRIDE_TTL_MS) {
+  speakerAudioOverride = withOverride(speakerAudioOverride, patch, ttlMs);
+}
+
+function setMicAudioOverride(patch, ttlMs = AUDIO_OVERRIDE_TTL_MS) {
+  micAudioOverride = withOverride(micAudioOverride, patch, ttlMs);
+}
+
+function setAppAudioOverride(id, patch, ttlMs = AUDIO_OVERRIDE_TTL_MS) {
+  const key = String(id || '').trim();
+  if (!key) return;
+  const previous = appAudioOverrides.get(key) || { volume: null, muted: null, expiresAt: 0 };
+  appAudioOverrides.set(key, withOverride(previous, patch, ttlMs));
+}
+
+function applyDeviceAudioOverride(device, overrideState) {
+  if (!device || !overrideState) return device;
+  if (overrideState.expiresAt <= Date.now()) return device;
+  if (typeof overrideState.volume === 'number') device.volume = overrideState.volume;
+  if (typeof overrideState.muted === 'boolean') device.muted = overrideState.muted;
+  return device;
+}
+
+function applyAppAudioOverride(appItem) {
+  if (!appItem || !appItem.id) return appItem;
+  const override = appAudioOverrides.get(appItem.id);
+  if (!override) return appItem;
+  if (override.expiresAt <= Date.now()) {
+    appAudioOverrides.delete(appItem.id);
+    return appItem;
+  }
+  if (typeof override.volume === 'number') appItem.volume = override.volume;
+  if (typeof override.muted === 'boolean') appItem.muted = override.muted;
+  return appItem;
+}
 
 function makeCsvPath() {
   const stamp = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -172,6 +254,262 @@ function fetchJson(url, timeout = 2500) {
     req.on('timeout', () => { req.destroy(new Error('Artwork lookup timeout')); });
     req.on('error', reject);
   });
+}
+
+function fetchText(url, timeout = 3500, redirectsLeft = 5) {
+  return new Promise((resolve, reject) => {
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      reject(new Error('Invalid news feed URL'));
+      return;
+    }
+
+    const client = parsedUrl.protocol === 'http:' ? http : https;
+    const req = client.get(parsedUrl, {
+      timeout,
+      headers: {
+        'User-Agent': 'XenonEdgeWidget/1.0',
+        'Accept': 'application/rss+xml, application/xml;q=0.9, text/xml;q=0.8',
+      },
+    }, res => {
+      const status = Number(res.statusCode || 0);
+      const location = res.headers && res.headers.location;
+      const isRedirect = status >= 300 && status < 400 && !!location;
+
+      if (isRedirect) {
+        if (redirectsLeft <= 0) {
+          reject(new Error('News feed redirect limit reached'));
+          res.resume();
+          return;
+        }
+        const nextUrl = new URL(location, parsedUrl).toString();
+        res.resume();
+        fetchText(nextUrl, timeout, redirectsLeft - 1).then(resolve, reject);
+        return;
+      }
+
+      if (status >= 400) {
+        reject(new Error(`HTTP ${status}`));
+        res.resume();
+        return;
+      }
+
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => resolve(body));
+    });
+    req.on('timeout', () => { req.destroy(new Error('News feed timeout')); });
+    req.on('error', reject);
+  });
+}
+
+function decodeXmlEntities(value) {
+  if (!value) return '';
+  const named = {
+    amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
+  };
+  return String(value)
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      const code = Number.parseInt(hex, 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : '';
+    })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const code = Number.parseInt(dec, 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : '';
+    })
+    .replace(/&([a-z]+);/gi, (match, entity) => named[entity.toLowerCase()] || match);
+}
+
+function extractXmlTagData(block, tagName) {
+  const match = String(block || '').match(new RegExp(`<${tagName}\\b([^>]*)>([\\s\\S]*?)<\\/${tagName}>`, 'i'));
+  if (!match) return { value: '', attrs: '' };
+  return {
+    value: decodeXmlEntities(match[2]).replace(/\s+/g, ' ').trim(),
+    attrs: String(match[1] || ''),
+  };
+}
+
+function extractXmlTag(block, tagName) {
+  return extractXmlTagData(block, tagName).value;
+}
+
+function extractXmlAttr(attrs, name) {
+  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
+  const match = String(attrs || '').match(pattern);
+  if (!match) return '';
+  return decodeXmlEntities(match[1] || match[2] || '').trim();
+}
+
+function sanitizeNewsLink(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/.test(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function sanitizeNewsDomain(value) {
+  const raw = String(value || '')
+    .toLowerCase()
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./, '')
+    .split('/')[0]
+    .split('?')[0]
+    .split('#')[0]
+    .trim();
+  const cleaned = raw.replace(/[^a-z0-9.-]/g, '').replace(/\.\.+/g, '.').replace(/^-+|-+$/g, '');
+  if (!cleaned || !cleaned.includes('.')) return '';
+  return cleaned.slice(0, 120);
+}
+
+function normalizeNewsToken(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeSourceWithNoTld(value) {
+  return String(value || '').replace(/\.[a-z]{2,}$/i, '');
+}
+
+function stripNewsSourceSuffix(title, source) {
+  const rawTitle = String(title || '').trim();
+  const rawSource = String(source || '').trim();
+  if (!rawTitle || !rawSource) return rawTitle;
+
+  const sourceToken = normalizeNewsToken(rawSource);
+  const sourceNoTldToken = normalizeNewsToken(normalizeSourceWithNoTld(rawSource));
+  if (!sourceToken) return rawTitle;
+
+  const suffixMatch = rawTitle.match(/^(.*?)(?:\s[-|·–—:]\s)([^-–—|·:]+)$/);
+  if (!suffixMatch) return rawTitle;
+
+  const suffix = String(suffixMatch[2] || '').trim();
+  const suffixToken = normalizeNewsToken(suffix);
+  if (!suffixToken) return rawTitle;
+
+  if (suffixToken === sourceToken || (sourceNoTldToken && suffixToken === sourceNoTldToken)) {
+    const trimmed = String(suffixMatch[1] || '').trim();
+    return trimmed || rawTitle;
+  }
+
+  return rawTitle;
+}
+
+function sourceDomainFromName(source) {
+  const token = normalizeNewsToken(source);
+  if (!token) return '';
+  if (NEWS_SOURCE_DOMAIN_OVERRIDES.has(token)) return NEWS_SOURCE_DOMAIN_OVERRIDES.get(token);
+  const domainLike = String(source || '').toLowerCase().match(/([a-z0-9-]+(?:\.[a-z0-9-]+)+)/);
+  return sanitizeNewsDomain(domainLike ? domainLike[1] : '');
+}
+
+function resolveNewsSourceDomain(sourceUrl, sourceName) {
+  const safeUrl = sanitizeNewsLink(sourceUrl);
+  if (safeUrl) {
+    try {
+      return sanitizeNewsDomain(new URL(safeUrl).hostname);
+    } catch {
+      // Fall back to source-name parsing below.
+    }
+  }
+  return sourceDomainFromName(sourceName);
+}
+
+function resolveNewsFeedUrl(feedUrl, maxResults) {
+  const safeUrl = sanitizeNewsFeedUrl(feedUrl) || NEWS_DEFAULT_FEED_URL;
+  try {
+    const parsed = new URL(safeUrl);
+    const isGoogleNewsRss = /(^|\.)news\.google\.com$/i.test(parsed.hostname) && /\/rss\//i.test(parsed.pathname);
+    if (isGoogleNewsRss) {
+      parsed.searchParams.set('num', String(Math.max(NEWS_MIN_RESULTS, Math.min(NEWS_MAX_RESULTS, Math.round(Number(maxResults) || NEWS_DEFAULT_RESULTS)))));
+      return parsed.toString();
+    }
+    return safeUrl;
+  } catch {
+    return safeUrl;
+  }
+}
+
+function parseNewsRss(xml, maxItems = NEWS_DEFAULT_RESULTS) {
+  const limit = Number.isFinite(Number(maxItems))
+    ? Math.max(NEWS_MIN_RESULTS, Math.min(NEWS_MAX_RESULTS, Math.round(Number(maxItems))))
+    : NEWS_DEFAULT_RESULTS;
+  const blocks = String(xml || '').match(/<item\b[\s\S]*?<\/item>/gi) || [];
+  const items = [];
+  const seen = new Set();
+
+  for (const block of blocks) {
+    const sourceTag = extractXmlTagData(block, 'source');
+    const source = sourceTag.value.slice(0, 80);
+    const sourceUrl = sanitizeNewsLink(extractXmlAttr(sourceTag.attrs, 'url'));
+    const sourceDomain = resolveNewsSourceDomain(sourceUrl, source);
+    const titleRaw = extractXmlTag(block, 'title').slice(0, 220);
+    const title = stripNewsSourceSuffix(titleRaw, source);
+    const link = sanitizeNewsLink(extractXmlTag(block, 'link'));
+    const pubDateRaw = extractXmlTag(block, 'pubDate');
+    const parsedDate = Date.parse(pubDateRaw);
+    if (!title || !link) continue;
+    const dedupeKey = `${title.toLowerCase()}|${source.toLowerCase()}|${link}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    items.push({
+      title,
+      link,
+      source,
+      sourceUrl,
+      sourceDomain,
+      publishedAt: Number.isFinite(parsedDate) ? parsedDate : null,
+    });
+    if (items.length >= limit) break;
+  }
+
+  return items;
+}
+
+async function getNewsHeadlines(forceRefresh = false) {
+  const settings = await readHubSettings().catch(() => null);
+  const newsSettings = normalizeSettingsNews(settings && settings.news);
+  const feedUrl = newsSettings.feedUrl;
+  const maxResults = newsSettings.maxResults;
+  const resolvedFeedUrl = resolveNewsFeedUrl(feedUrl, maxResults);
+  const age = Date.now() - newsCache.updatedAt;
+  if (
+    !forceRefresh
+    && newsCache.items.length
+    && newsCache.feedUrl === feedUrl
+    && newsCache.maxResults === maxResults
+    && age < NEWS_CACHE_MS
+  ) {
+    return { items: newsCache.items, updatedAt: newsCache.updatedAt };
+  }
+  if (newsPending && newsPending.feedUrl === feedUrl && newsPending.maxResults === maxResults) return newsPending.promise;
+
+  const pendingPromise = (async () => {
+    try {
+      const xml = await fetchText(resolvedFeedUrl, 4500);
+      const items = parseNewsRss(xml, maxResults);
+      if (!items.length) throw new Error('No news items found');
+      newsCache = { items, updatedAt: Date.now(), feedUrl, maxResults };
+      return { items: newsCache.items, updatedAt: newsCache.updatedAt };
+    } catch (error) {
+      if (newsCache.items.length && newsCache.feedUrl === feedUrl && newsCache.maxResults === maxResults) {
+        return { items: newsCache.items, updatedAt: newsCache.updatedAt, stale: true };
+      }
+      throw error;
+    } finally {
+      if (newsPending && newsPending.feedUrl === feedUrl && newsPending.maxResults === maxResults) newsPending = null;
+    }
+  })();
+
+  newsPending = { feedUrl, maxResults, promise: pendingPromise };
+  return pendingPromise;
 }
 
 async function hydrateArtwork(data) {
@@ -438,14 +776,111 @@ function splitMediaTitle(rawTitle, appName) {
 }
 
 function displayAppName(name) {
-  if (/spotify/i.test(name || '')) return 'Spotify';
-  if (/chrome|edge|firefox|brave|opera|youtube/i.test(name || '')) return 'YouTube';
-  if (/zunemusic|zunevideo|microsoftmediaplayer|windowsmediaplayer/i.test(name || '')) return 'Lettore Multimediale';
+  const value = String(name || '');
+  if (/jellyfin/i.test(name || '')) return 'Jellyfin';
+  if (/spotify/i.test(value)) return 'Spotify';
+  if (/youtube/i.test(value)) return 'YouTube';
+  if (/chrome|msedge|edge|firefox|brave|opera/i.test(value)) return 'YouTube';
+  if (/zunemusic|zunevideo|microsoftmediaplayer|windowsmediaplayer/i.test(value)) return 'Lettore Multimediale';
   if (!name) return 'Media';
   // Strip Windows package format: Publisher.Name_hash!AppId → Name
   const pkg = (name || '').match(/^(?:[^.]+\.)+([^._!]+)[_!]/);
   if (pkg) return pkg[1];
   return name;
+}
+
+function displayMixerAppName(name, windowTitle = '') {
+  const raw = String(name || '').trim();
+  const title = String(windowTitle || '').trim();
+  if (/jellyfin/i.test(`${raw} ${title}`)) return 'Jellyfin';
+  if (!raw) return 'App';
+  const base = path.win32.basename(raw).replace(/\.exe$/i, '');
+  const key = base.toLowerCase();
+  const token = key.replace(/[^a-z0-9]/g, '');
+  const known = {
+    chrome: 'Chrome',
+    msedge: 'Edge',
+    edge: 'Edge',
+    firefox: 'Firefox',
+    brave: 'Brave',
+    opera: 'Opera',
+    spotify: 'Spotify',
+    vlc: 'VLC',
+    discord: 'Discord',
+    icue: 'iCUE',
+    steam: 'Steam',
+    obs64: 'OBS',
+  };
+  if (known[key]) return known[key];
+  if (known[token]) return known[token];
+  if (!base) return 'App';
+  return base.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').replace(/(^|\s)\S/g, s => s.toUpperCase()).trim();
+}
+
+function sanitizeMixerWindowTitle(title) {
+  return String(title || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
+}
+
+function normalizeMixerAppKey(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return '';
+  const base = path.win32.basename(raw).replace(/\.exe$/i, '');
+  return base.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeProcessToken(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\.exe$/i, '')
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+async function getRunningWindowApps() {
+  const age = Date.now() - windowAppsCache.updatedAt;
+  if (windowAppsCache.apps.length && age < WINDOW_APPS_CACHE_MS) return windowAppsCache.apps;
+  if (windowAppsPending) return windowAppsPending;
+
+  windowAppsPending = (async () => {
+    const command = [
+      '$apps = @(Get-Process -ErrorAction SilentlyContinue',
+      '| Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle }',
+      '| Select-Object -First 120 -Property ProcessName,MainWindowTitle)',
+      '; [pscustomobject]@{ apps = $apps } | ConvertTo-Json -Depth 4 -Compress',
+    ].join(' ');
+
+    try {
+      const data = await runPowerShellCommand(command, 6000);
+      const source = Array.isArray(data.apps) ? data.apps : (data.apps ? [data.apps] : []);
+      const seen = new Set();
+      const apps = [];
+      source.forEach(item => {
+        const processName = String(item.ProcessName || '').trim();
+        if (!processName) return;
+        const token = normalizeProcessToken(processName);
+        if (!token || seen.has(token)) return;
+        if (/^(?:audiodg|svchost|shellexperiencehost|systemsettings|applicationframehost)$/.test(token)) return;
+        seen.add(token);
+        apps.push({
+          processName,
+          token,
+          title: sanitizeMixerWindowTitle(item.MainWindowTitle),
+          name: displayMixerAppName(processName, item.MainWindowTitle),
+        });
+      });
+      windowAppsCache.apps = apps;
+      windowAppsCache.updatedAt = Date.now();
+      return apps;
+    } catch {
+      return windowAppsCache.apps;
+    } finally {
+      windowAppsPending = null;
+    }
+  })();
+
+  return windowAppsPending;
 }
 
 function liveMediaSnapshot(data, ageMs) {
@@ -457,6 +892,80 @@ function liveMediaSnapshot(data, ageMs) {
     snapshot.position = Math.min(duration, position + Math.floor(ageMs / 1000));
   }
   return snapshot;
+}
+
+function mediaItemKey(data) {
+  if (!data || !data.active) return '';
+  const app = String(data.app || '').trim().toLowerCase();
+  const source = String(data.source || '').trim().toLowerCase();
+  const title = String(data.title || '').trim().toLowerCase();
+  const artist = String(data.artist || data.album || '').trim().toLowerCase();
+  return `${app}|${source}|${title}|${artist}`;
+}
+
+function clampMediaPosition(position, duration) {
+  const safeDuration = Math.max(0, Math.floor(Number(duration) || 0));
+  const safePosition = Math.max(0, Math.floor(Number(position) || 0));
+  if (safeDuration <= 0) return safePosition;
+  return Math.min(safeDuration, safePosition);
+}
+
+function setMediaTimelineState(position, duration, status, key, now, rawPosition = position) {
+  const safeDuration = Math.max(0, Math.floor(Number(duration) || 0));
+  mediaTimelineState.key = key || '';
+  mediaTimelineState.duration = safeDuration;
+  mediaTimelineState.status = String(status || 'Paused');
+  mediaTimelineState.anchorPosition = clampMediaPosition(position, safeDuration);
+  mediaTimelineState.anchorAt = now;
+  mediaTimelineState.lastRawPosition = clampMediaPosition(rawPosition, safeDuration);
+}
+
+function getMediaTimelineStatePosition(now) {
+  const duration = Math.max(0, Math.floor(Number(mediaTimelineState.duration) || 0));
+  const base = clampMediaPosition(mediaTimelineState.anchorPosition, duration);
+  if (mediaTimelineState.status !== 'Playing') return base;
+  const elapsedSeconds = Math.max(0, Math.floor((now - mediaTimelineState.anchorAt) / 1000));
+  return clampMediaPosition(base + elapsedSeconds, duration);
+}
+
+function stabilizeLiveMediaPosition(nextData) {
+  if (!nextData) return nextData;
+  const now = Date.now();
+  const normalized = { ...nextData };
+  normalized.duration = Math.max(0, Math.floor(Number(normalized.duration) || 0));
+  normalized.position = clampMediaPosition(normalized.position, normalized.duration);
+  const key = mediaItemKey(normalized);
+  const status = String(normalized.playbackStatus || 'Paused');
+
+  if (!normalized.active || !key) {
+    setMediaTimelineState(normalized.position, normalized.duration, status, key, now, normalized.position);
+    return normalized;
+  }
+
+  const sameItem = key === mediaTimelineState.key;
+  if (!sameItem) {
+    setMediaTimelineState(normalized.position, normalized.duration, status, key, now, normalized.position);
+    return normalized;
+  }
+
+  if (status === 'Playing' && mediaTimelineState.status === 'Playing') {
+    const projected = getMediaTimelineStatePosition(now);
+    const rawPosition = normalized.position;
+    const rawMovedForward = rawPosition > mediaTimelineState.lastRawPosition;
+
+    if (!rawMovedForward || rawPosition + 2 < projected) {
+      // Keep a smooth local timeline when SMTC reports a stale browser position.
+      normalized.position = clampMediaPosition(Math.max(projected, rawPosition), normalized.duration);
+      mediaTimelineState.duration = normalized.duration;
+      mediaTimelineState.status = status;
+      mediaTimelineState.key = key;
+      mediaTimelineState.lastRawPosition = clampMediaPosition(rawPosition, normalized.duration);
+      return normalized;
+    }
+  }
+
+  setMediaTimelineState(normalized.position, normalized.duration, status, key, now, normalized.position);
+  return normalized;
 }
 
 function getCpuUsage() {
@@ -716,9 +1225,10 @@ async function getMediaInfo(force = false) {
   try {
     const data = await runPowerShellScript(MEDIA_SCRIPT, ['info'], 12000);
     const hydrated = await hydrateArtwork(data);
-    mediaCache = { data: hydrated, updatedAt: Date.now() };
+    const stabilized = stabilizeLiveMediaPosition(hydrated);
+    mediaCache = { data: stabilized, updatedAt: Date.now() };
     mediaPending = null;
-    return hydrated;
+    return stabilized;
   } catch (e) {
     if (mediaCache.data) {
       mediaPending = null;
@@ -752,8 +1262,9 @@ function getMediaFallback(error) {
             return;
           }
 
-          const appName = displayAppName(app[F.NAME]);
-          const rawTitle = app[F.WINDOW_TITLE] || app[F.NAME] || 'Media attivo';
+          const windowTitle = app[F.WINDOW_TITLE] || '';
+          const appName = /jellyfin/i.test(`${app[F.NAME] || ''} ${windowTitle}`) ? 'Jellyfin' : displayAppName(app[F.NAME]);
+          const rawTitle = windowTitle || app[F.NAME] || 'Media attivo';
           const split = splitMediaTitle(rawTitle, appName);
 
           resolve({
@@ -779,8 +1290,9 @@ function getMediaFallback(error) {
     });
 }
 
-async function mediaAction(action) {
-  const data = await runPowerShellScript(MEDIA_SCRIPT, [action], 5000);
+async function mediaAction(action, extraArgs = []) {
+  const args = [action, ...extraArgs.map(arg => String(arg))];
+  const data = await runPowerShellScript(MEDIA_SCRIPT, args, 5000);
   mediaCache.updatedAt = 0;
   return data;
 }
@@ -799,12 +1311,14 @@ function parseCsvLine(line) {
 
 function getAudioInfo() {
   return new Promise((resolve, reject) => {
-    readSoundVolumeRows().then(rows => {
+    readSoundVolumeRows().then(async rows => {
         try {
-          rows = rows.filter(f => f[F.TYPE] === 'Device' && f[F.STATE] === 'Active');
+          const activeRows = rows.filter(f => f[F.STATE] === 'Active');
+          const deviceRows = activeRows.filter(f => f[F.TYPE] === 'Device');
 
-          const speakers = rows.filter(f => f[F.DIR] === 'Render');
-          const mics     = rows.filter(f => f[F.DIR] === 'Capture');
+          const speakers = deviceRows.filter(f => f[F.DIR] === 'Render');
+          const mics     = deviceRows.filter(f => f[F.DIR] === 'Capture');
+          const appRowsAll = rows.filter(f => f[F.TYPE] === 'Application' && f[F.DIR] === 'Render');
 
           const defSpk = speakers.find(f => f[F.DEFAULT] === 'Render') || speakers[0];
           const defMic = mics.find(f => f[F.DEFAULT] === 'Capture')    || mics[0];
@@ -816,16 +1330,75 @@ function getAudioInfo() {
             name:      f[F.DEVICE_NAME],
             label:     f[F.NAME],
             id:        f[F.CLI_ID],
+            endpointId: String(f[F.ITEM_ID] || '').trim(),
             isDefault,
             volume:    parseInt(f[F.VOL_PCT]) || 0,
             muted:     f[F.MUTED] === 'Yes',
           });
 
+          const defaultSpeakerDeviceName = defSpk ? String(defSpk[F.DEVICE_NAME] || '').trim() : '';
+          const defaultSpeakerPrefix = defaultSpeakerDeviceName ? `${defaultSpeakerDeviceName}\\Application\\` : '';
+          const appRows = appRowsAll;
+
+          const appMap = new Map();
+          appRows.forEach(f => {
+            const id = String(f[F.CLI_ID] || f[F.NAME] || '').trim();
+            if (!id) return;
+
+            const rawName = String(f[F.NAME] || '').trim();
+            const windowTitle = String(f[F.WINDOW_TITLE] || '').trim();
+            const baseProcess = path.win32.basename(rawName).toLowerCase();
+            const combined = `${rawName} ${windowTitle}`.toLowerCase();
+            if (!rawName && !windowTitle) return;
+            if (/audiodg|svchost/.test(combined)) return;
+            if (/^(?:audiodg|svchost(?:\.exe)?|sihost(?:\.exe)?)$/.test(baseProcess)) return;
+            const appKey = normalizeMixerAppKey(rawName || id);
+            if (!appKey) return;
+
+            const state = String(f[F.STATE] || '');
+            const volume = Math.max(0, Math.min(100, parseInt(f[F.VOL_PCT], 10) || 0));
+            const muted = String(f[F.MUTED] || '').toLowerCase() === 'yes';
+            const onDefaultDevice = defaultSpeakerPrefix && id.startsWith(defaultSpeakerPrefix);
+            const score =
+              (state === 'Active' ? 100 : 0)
+              + (onDefaultDevice ? 30 : 0)
+              + (muted ? 0 : 5)
+              + (volume / 100);
+
+            const appItem = {
+              id,
+              name: displayMixerAppName(rawName, windowTitle),
+              label: rawName || displayMixerAppName(rawName, windowTitle),
+              title: sanitizeMixerWindowTitle(windowTitle),
+              volume,
+              muted,
+              state,
+              score,
+            };
+            applyAppAudioOverride(appItem);
+
+            const existing = appMap.get(appKey);
+            if (!existing || appItem.score > existing.score) appMap.set(appKey, appItem);
+          });
+
+          const apps = Array.from(appMap.values()).map(item => {
+            const copy = { ...item };
+            delete copy.score;
+            return copy;
+          }).sort((left, right) => {
+            const leftActive = left.state === 'Active';
+            const rightActive = right.state === 'Active';
+            if (leftActive !== rightActive) return leftActive ? -1 : 1;
+            if (left.muted !== right.muted) return left.muted ? 1 : -1;
+            return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+          });
+
           resolve({
-            speaker:  defSpk ? toDevice(defSpk, true)  : null,
-            mic:      defMic ? toDevice(defMic, true)   : null,
+            speaker:  defSpk ? applyDeviceAudioOverride(toDevice(defSpk, true), speakerAudioOverride)  : null,
+            mic:      defMic ? applyDeviceAudioOverride(toDevice(defMic, true), micAudioOverride)   : null,
             speakers: speakers.map(f => toDevice(f, f === defSpk)),
             mics:     mics.map(f => toDevice(f, f === defMic)),
+            apps,
           });
         } catch (e) { reject(e); }
     }).catch(reject);
@@ -833,15 +1406,19 @@ function getAudioInfo() {
 }
 
 function setMicMute(mute) {
-  const action = mute ? '/Mute' : '/Unmute';
-  // Use the cached mic CLI ID (resolved from SoundVolumeView output) so the call works
-  // regardless of the Windows display language. Falls back silently if the cache is empty.
-  if (cachedMicId) {
-    execFile(SVV, [action, cachedMicId], err => { if (err) console.error(err.message); });
-  } else if (cachedSpeakerName) {
-    // Last-resort: try the generic 'DefaultCaptureDevice' selector understood by SVV
-    execFile(SVV, [action, 'DefaultCaptureDevice'], err => { if (err) console.error(err.message); });
-  }
+  setMicAudioOverride({ muted: !!mute });
+  runAudioCtl(['set-capture-mute', mute ? '1' : '0'], 1800).then(result => {
+    if (result && result.ok) return;
+    const action = mute ? '/Mute' : '/Unmute';
+    // Use the cached mic CLI ID (resolved from SoundVolumeView output) so the call works
+    // regardless of the Windows display language. Falls back silently if the cache is empty.
+    if (cachedMicId) {
+      execFile(SVV, [action, cachedMicId], err => { if (err) console.error(err.message); });
+    } else if (cachedSpeakerName) {
+      // Last-resort: try the generic 'DefaultCaptureDevice' selector understood by SVV
+      execFile(SVV, [action, 'DefaultCaptureDevice'], err => { if (err) console.error(err.message); });
+    }
+  }).catch(() => {});
 }
 
 function readBody(req) {
@@ -850,6 +1427,13 @@ function readBody(req) {
     req.on('data', chunk => { body += chunk; });
     req.on('end',  () => resolve(body));
   });
+}
+
+function sanitizeAudioSessionId(value) {
+  const safe = String(value || '').trim().slice(0, 512);
+  if (!safe) return '';
+  if (/[\r\n]/.test(safe)) return '';
+  return safe;
 }
 
 function readBodyBuffer(req, maxBytes = BACKGROUND_MAX_BYTES) {
@@ -932,6 +1516,44 @@ function execFilePromise(file, args, options = {}) {
   });
 }
 
+async function ensureAudioCtlAvailable() {
+  if (audioCtlReady && fs.existsSync(AUDIOCTL_DLL)) return true;
+  if (!fs.existsSync(AUDIOCTL_PROJECT)) return false;
+  if (audioCtlBuildInFlight) return audioCtlBuildInFlight;
+  audioCtlBuildInFlight = execFilePromise(DOTNET_BIN, ['build', AUDIOCTL_PROJECT, '-c', 'Release'], {
+    cwd: __dirname,
+    timeout: 120000,
+    maxBuffer: 2 * 1024 * 1024,
+  }).then(() => {
+    audioCtlReady = fs.existsSync(AUDIOCTL_DLL);
+    if (audioCtlReady) console.log('[AudioCtl] Ready:', AUDIOCTL_DLL);
+    return audioCtlReady;
+  }).catch(error => {
+    audioCtlReady = false;
+    console.warn('[AudioCtl] Build failed:', error && error.message ? error.message : error);
+    return false;
+  }).finally(() => {
+    audioCtlBuildInFlight = null;
+  });
+  return audioCtlBuildInFlight;
+}
+
+async function runAudioCtl(args, timeout = 2500) {
+  const available = await ensureAudioCtlAvailable();
+  if (!available) return { ok: false, available: false, code: null };
+  try {
+    await execFilePromise(DOTNET_BIN, [AUDIOCTL_DLL, ...args], { timeout, maxBuffer: 512 * 1024 });
+    return { ok: true, available: true, code: 0 };
+  } catch (error) {
+    const code = Number.isFinite(Number(error && error.code)) ? Number(error.code) : null;
+    // Code 2 = no matching app session; caller can safely fall back to SoundVolumeView.
+    if (code !== 2) {
+      console.warn('[AudioCtl] Command failed:', args.join(' '), error && error.message ? error.message : error);
+    }
+    return { ok: false, available: true, code };
+  }
+}
+
 function getFfmpegPath() {
   if (process.env.XEH_FFMPEG) return process.env.XEH_FFMPEG;
   const localCandidates = [
@@ -994,8 +1616,8 @@ async function transcodeMp4BackgroundToWebm(sourcePath, targetPath) {
   return stat;
 }
 
-const DASHBOARD_WIDGET_IDS = Object.freeze(['media', 'mic', 'system', 'notes', 'tasks']);
-const DASHBOARD_TAB_IDS = Object.freeze(['main', 'net']);
+const DASHBOARD_WIDGET_IDS = Object.freeze(['media', 'mic', 'system', 'shortcut', 'tasks']);
+const DASHBOARD_TAB_IDS = Object.freeze(['mixer', 'main', 'net']);
 const CALENDAR_TAB_IDS = Object.freeze(['calendar', 'tasks']);
 const MEDIA_VIEW_IDS = Object.freeze(['media', 'calendar']);
 const DASHBOARD_CARD_IDS = Object.freeze({
@@ -1010,7 +1632,7 @@ const DEFAULT_DASHBOARD_LAYOUT = Object.freeze({
     media: Object.freeze({ order: 0, size: 'tall', visible: true }),
     mic: Object.freeze({ order: 1, size: 'normal', visible: true }),
     system: Object.freeze({ order: 2, size: 'tall', visible: true }),
-    notes: Object.freeze({ order: 3, size: 'normal', visible: true }),
+    shortcut: Object.freeze({ order: 3, size: 'normal', visible: true }),
     tasks: Object.freeze({ order: 4, size: 'normal', visible: false }),
   }),
   cards: Object.freeze({
@@ -1032,7 +1654,7 @@ const DEFAULT_DASHBOARD_LAYOUT = Object.freeze({
       microphone: Object.freeze({ order: 2, size: 'normal', visible: true }),
     }),
   }),
-  tabs: Object.freeze({ order: ['main', 'net'], active: 'main' }),
+  tabs: Object.freeze({ order: ['mixer', 'main', 'net'], active: 'mixer' }),
   calendarTabs: Object.freeze({ order: ['calendar', 'tasks'], active: 'calendar' }),
   mediaView: Object.freeze({ active: 'media' }),
 });
@@ -1047,6 +1669,14 @@ const DEFAULT_HUB_SETTINGS = Object.freeze({
   backgroundMedia: null,
   lockWidgets: Object.freeze({ clock: true, weather: true, media: true, calendar: true }),
   weather: Object.freeze({ mode: 'auto', city: '' }),
+  news: Object.freeze({
+    feedUrl: NEWS_DEFAULT_FEED_URL,
+    refreshMinutes: NEWS_DEFAULT_REFRESH_MINUTES,
+    maxResults: NEWS_DEFAULT_RESULTS,
+  }),
+  mediaMode: Object.freeze({ url: '' }),
+  quickOutputSwitch: Object.freeze({ deviceAId: '', deviceBId: '' }),
+  quickShortcut: Object.freeze({ keys: '' }),
   dashboardLayout: DEFAULT_DASHBOARD_LAYOUT,
 });
 
@@ -1096,6 +1726,77 @@ function normalizeSettingsWeather(value) {
   };
 }
 
+function sanitizeNewsFeedUrl(value) {
+  const raw = String(value || '').trim().slice(0, 2048);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/.test(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeSettingsNews(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const feedUrl = sanitizeNewsFeedUrl(source.feedUrl) || NEWS_DEFAULT_FEED_URL;
+  const refreshMinutesRaw = Number(source.refreshMinutes);
+  const refreshMinutes = Number.isFinite(refreshMinutesRaw)
+    ? Math.max(NEWS_MIN_REFRESH_MINUTES, Math.min(NEWS_MAX_REFRESH_MINUTES, Math.round(refreshMinutesRaw)))
+    : NEWS_DEFAULT_REFRESH_MINUTES;
+  const maxResultsRaw = Number(source.maxResults);
+  const maxResults = Number.isFinite(maxResultsRaw)
+    ? Math.max(NEWS_MIN_RESULTS, Math.min(NEWS_MAX_RESULTS, Math.round(maxResultsRaw)))
+    : NEWS_DEFAULT_RESULTS;
+  return { feedUrl, refreshMinutes, maxResults };
+}
+
+function sanitizeMediaModeUrl(value) {
+  const raw = String(value || '').trim().slice(0, 2048);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/.test(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeSettingsMediaMode(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return { url: sanitizeMediaModeUrl(source.url) };
+}
+
+function sanitizeSettingsOutputDeviceId(value) {
+  const raw = String(value || '').trim().slice(0, 512);
+  if (!raw) return '';
+  if (/[\r\n]/.test(raw)) return '';
+  return raw;
+}
+
+function normalizeSettingsQuickOutputSwitch(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    deviceAId: sanitizeSettingsOutputDeviceId(source.deviceAId),
+    deviceBId: sanitizeSettingsOutputDeviceId(source.deviceBId),
+  };
+}
+
+function sanitizeQuickShortcutKeys(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.length > 64) return '';
+  if (!/^[\x20-\x7E]+$/.test(raw)) return '';
+  return raw;
+}
+
+function normalizeSettingsQuickShortcut(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return { keys: sanitizeQuickShortcutKeys(source.keys) };
+}
+
 function cloneDashboardLayout(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -1133,11 +1834,17 @@ function reindexDashboardCollection(collection) {
 function normalizeDashboardTabs(sourceTabs) {
   const source = sourceTabs && typeof sourceTabs === 'object' ? sourceTabs : {};
   const sourceOrder = Array.isArray(source.order) ? source.order : DEFAULT_DASHBOARD_LAYOUT.tabs.order;
+  const hasMixerInSource = sourceOrder.includes('mixer');
   const order = sourceOrder.filter(tab => DASHBOARD_TAB_IDS.includes(tab));
   DASHBOARD_TAB_IDS.forEach(tab => { if (!order.includes(tab)) order.push(tab); });
+  const activeSource = source.active;
+  let active = DASHBOARD_TAB_IDS.includes(activeSource) ? activeSource : DEFAULT_DASHBOARD_LAYOUT.tabs.active;
+  if (!hasMixerInSource && (activeSource === undefined || activeSource === 'main' || activeSource === 'net')) {
+    active = 'mixer';
+  }
   return {
     order,
-    active: DASHBOARD_TAB_IDS.includes(source.active) ? source.active : DEFAULT_DASHBOARD_LAYOUT.tabs.active,
+    active,
   };
 }
 
@@ -1207,6 +1914,10 @@ function normalizeHubSettings(value) {
     backgroundMedia: sanitizeSettingsBackgroundMedia(source.backgroundMedia),
     lockWidgets: normalizeLockWidgets(source.lockWidgets),
     weather: normalizeSettingsWeather(source.weather),
+    news: normalizeSettingsNews(source.news),
+    mediaMode: normalizeSettingsMediaMode(source.mediaMode),
+    quickOutputSwitch: normalizeSettingsQuickOutputSwitch(source.quickOutputSwitch),
+    quickShortcut: normalizeSettingsQuickShortcut(source.quickShortcut),
     dashboardLayout: normalizeDashboardLayout(source.dashboardLayout),
   };
 }
@@ -1381,9 +2092,14 @@ const server = http.createServer(async (req, res) => {
   };
   const err500 = msg  => { res.writeHead(500); res.end(String(msg)); };
 
-  const reqPath = urlObj.pathname;
+  const reqPath = (() => {
+    const pathname = urlObj.pathname || '/';
+    if (pathname === '/server') return '/';
+    if (pathname.startsWith('/server/')) return pathname.slice('/server'.length) || '/';
+    return pathname;
+  })();
 
-  if (reqPath === '/' && req.method === 'GET') {
+  if ((reqPath === '/' || reqPath === '/index.html') && req.method === 'GET') {
     const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
@@ -1424,6 +2140,13 @@ const server = http.createServer(async (req, res) => {
     }
     catch (e) { err500(e.message); }
 
+  } else if (reqPath === '/news' && req.method === 'GET') {
+    try {
+      const forceRefresh = urlObj.searchParams.get('refresh') === '1';
+      json(await getNewsHeadlines(forceRefresh));
+    }
+    catch (e) { err500(e.message); }
+
   } else if (reqPath === '/media' && req.method === 'GET') {
     try   { json(await getMediaInfo()); }
     catch (e) { err500(e.message); }
@@ -1439,6 +2162,29 @@ const server = http.createServer(async (req, res) => {
   } else if (reqPath === '/media/previous' && (req.method === 'POST' || req.method === 'GET')) {
     try   { json(await mediaAction('previous')); }
     catch (e) { err500(e.message); }
+
+  } else if (reqPath === '/media/seek' && (req.method === 'POST' || req.method === 'GET')) {
+    try {
+      let position;
+      if (req.method === 'GET') {
+        position = Number(urlObj.searchParams.get('position'));
+      } else {
+        const body = JSON.parse(await readBody(req));
+        position = Number(body && body.position);
+      }
+      if (!Number.isFinite(position)) {
+        res.writeHead(400);
+        res.end('Invalid position');
+        return;
+      }
+      const targetSeconds = Math.max(0, Math.round(position));
+      const result = await mediaAction('seek', [targetSeconds]);
+      if (mediaCache.data) {
+        const duration = Math.max(0, Math.round(Number(mediaCache.data.duration) || 0));
+        mediaCache.data.position = duration > 0 ? Math.min(duration, targetSeconds) : targetSeconds;
+      }
+      json(result);
+    } catch (e) { err500(e.message); }
 
   } else if (reqPath === '/windows' && req.method === 'GET') {
     try   { json(await runPowerShellScript(WINDOWS_SCRIPT, ['list'], 12000)); }
@@ -1462,9 +2208,61 @@ const server = http.createServer(async (req, res) => {
         ({ level } = JSON.parse(await readBody(req)));
       }
       const vol = Math.max(0, Math.min(100, parseInt(level)));
+      const fast = await runAudioCtl(['set-master', String(vol)], 1800);
+      if (fast.ok) {
+        setSpeakerAudioOverride({ volume: vol });
+        json({ ok: true, level: vol });
+        return;
+      }
       if (!cachedSpeakerId) { err500('Cache not ready'); return; }
       execFile(SVV, ['/SetVolume', cachedSpeakerId, String(vol)], e => {
-        if (e) err500(e.message); else json({ ok: true, level: vol });
+        if (e) err500(e.message);
+        else {
+          setSpeakerAudioOverride({ volume: vol });
+          json({ ok: true, level: vol });
+        }
+      });
+    } catch (e) { err500(e.message); }
+
+  } else if (reqPath === '/audio/app/volume' && req.method === 'POST') {
+    try {
+      const { id, level } = JSON.parse(await readBody(req));
+      const target = sanitizeAudioSessionId(id);
+      if (!target) { res.writeHead(400); res.end('Invalid app id'); return; }
+      const vol = Math.max(0, Math.min(100, parseInt(level, 10)));
+      const fast = await runAudioCtl(['set-app-volume', target, String(vol)], 2200);
+      if (fast.ok) {
+        setAppAudioOverride(target, { volume: vol });
+        json({ ok: true, id: target, level: vol });
+        return;
+      }
+      execFile(SVV, ['/SetVolume', target, String(vol)], e => {
+        if (e) err500(e.message);
+        else {
+          setAppAudioOverride(target, { volume: vol });
+          json({ ok: true, id: target, level: vol });
+        }
+      });
+    } catch (e) { err500(e.message); }
+
+  } else if (reqPath === '/audio/app/mute' && req.method === 'POST') {
+    try {
+      const { id, mute } = JSON.parse(await readBody(req));
+      const target = sanitizeAudioSessionId(id);
+      if (!target) { res.writeHead(400); res.end('Invalid app id'); return; }
+      const fast = await runAudioCtl(['set-app-mute', target, mute ? '1' : '0'], 2200);
+      if (fast.ok) {
+        setAppAudioOverride(target, { muted: !!mute });
+        json({ ok: true, id: target, muted: !!mute });
+        return;
+      }
+      const action = mute ? '/Mute' : '/Unmute';
+      execFile(SVV, [action, target], e => {
+        if (e) err500(e.message);
+        else {
+          setAppAudioOverride(target, { muted: !!mute });
+          json({ ok: true, id: target, muted: !!mute });
+        }
       });
     } catch (e) { err500(e.message); }
 
@@ -1477,23 +2275,128 @@ const server = http.createServer(async (req, res) => {
         ({ level } = JSON.parse(await readBody(req)));
       }
       const vol = Math.max(0, Math.min(100, parseInt(level)));
+      const fast = await runAudioCtl(['set-capture', String(vol)], 1800);
+      if (fast.ok) {
+        setMicAudioOverride({ volume: vol });
+        json({ ok: true, level: vol });
+        return;
+      }
       if (!cachedMicId) { err500('Cache not ready'); return; }
       execFile(SVV, ['/SetVolume', cachedMicId, String(vol)], e => {
-        if (e) err500(e.message); else json({ ok: true, level: vol });
+        if (e) err500(e.message);
+        else {
+          setMicAudioOverride({ volume: vol });
+          json({ ok: true, level: vol });
+        }
       });
     } catch (e) { err500(e.message); }
 
   } else if (reqPath === '/speaker/mute' && (req.method === 'POST' || req.method === 'GET')) {
-    if (!cachedSpeakerId) { err500('Cache not ready'); return; }
-    execFile(SVV, ['/Switch', cachedSpeakerId], e => {
-      if (e) err500(e.message); else json({ ok: true });
-    });
+    try {
+      const parseBooleanLike = value => {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        if (typeof value === 'string') {
+          const normalized = value.trim().toLowerCase();
+          if (!normalized) return null;
+          if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+          if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+        }
+        return null;
+      };
+
+      let requestedMute = null;
+      if (req.method === 'GET') {
+        if (urlObj.searchParams.has('mute')) {
+          requestedMute = parseBooleanLike(urlObj.searchParams.get('mute'));
+        }
+      } else {
+        const bodyRaw = await readBody(req);
+        if (bodyRaw && bodyRaw.trim()) {
+          const parsed = JSON.parse(bodyRaw);
+          if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'mute')) {
+            requestedMute = parseBooleanLike(parsed.mute);
+          }
+        }
+      }
+
+      if (requestedMute === null) {
+        const fastToggle = await runAudioCtl(['toggle-master-mute'], 1800);
+        if (fastToggle.ok) { json({ ok: true }); return; }
+        if (!cachedSpeakerId) { err500('Cache not ready'); return; }
+        execFile(SVV, ['/Switch', cachedSpeakerId], e => {
+          if (e) err500(e.message); else json({ ok: true });
+        });
+        return;
+      }
+
+      const mute = !!requestedMute;
+      const fastSet = await runAudioCtl(['set-master-mute', mute ? '1' : '0'], 1800);
+      if (fastSet.ok) {
+        setSpeakerAudioOverride({ muted: mute });
+        json({ ok: true, muted: mute });
+        return;
+      }
+      if (!cachedSpeakerId) { err500('Cache not ready'); return; }
+      const action = mute ? '/Mute' : '/Unmute';
+      execFile(SVV, [action, cachedSpeakerId], e => {
+        if (e) err500(e.message);
+        else {
+          setSpeakerAudioOverride({ muted: mute });
+          json({ ok: true, muted: mute });
+        }
+      });
+    } catch (e) { err500(e.message); }
+
+  } else if (reqPath === '/speaker/switch' && req.method === 'POST') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const firstId = sanitizeAudioSessionId(body && body.firstId);
+      const secondId = sanitizeAudioSessionId(body && body.secondId);
+      const firstEndpointId = sanitizeAudioSessionId(body && body.firstEndpointId);
+      const secondEndpointId = sanitizeAudioSessionId(body && body.secondEndpointId);
+      if (!firstId || !secondId || firstId === secondId) {
+        res.writeHead(400);
+        res.end('Invalid switch device ids');
+        return;
+      }
+      if (firstEndpointId && secondEndpointId && firstEndpointId !== secondEndpointId) {
+        const fast = await runAudioCtl(['switch-default-render', firstEndpointId, secondEndpointId], 1500);
+        if (fast.ok) {
+          cachedSpeakerId = null;
+          json({ ok: true, fast: true });
+          return;
+        }
+      }
+      execFile(SVV, ['/SwitchDefault', firstId, secondId, 'all'], e => {
+        if (e) err500(e.message);
+        else {
+          cachedSpeakerId = null;
+          json({ ok: true, fast: false });
+        }
+      });
+    } catch (e) { err500(e.message); }
 
   } else if (reqPath === '/speaker/set' && req.method === 'POST') {
     try {
-      const { id } = JSON.parse(await readBody(req));
+      const body = JSON.parse(await readBody(req));
+      const id = sanitizeAudioSessionId(body && body.id);
+      const endpointId = sanitizeAudioSessionId(body && body.endpointId);
+      if (!id) {
+        res.writeHead(400);
+        res.end('Invalid device id');
+        return;
+      }
+      if (endpointId) {
+        const fast = await runAudioCtl(['set-default-render', endpointId], 1500);
+        if (fast.ok) {
+          cachedSpeakerId = id;
+          json({ ok: true, fast: true });
+          return;
+        }
+      }
       execFile(SVV, ['/SetDefault', id, 'all'], e => {
-        if (e) err500(e.message); else { cachedSpeakerId = id; json({ ok: true }); }
+        if (e) err500(e.message); else { cachedSpeakerId = id; json({ ok: true, fast: false }); }
       });
     } catch (e) { err500(e.message); }
 
@@ -1574,6 +2477,14 @@ const server = http.createServer(async (req, res) => {
     exec('rundll32.exe user32.dll,LockWorkStation', e => {
       if (e) err500(e.message); else json({ ok: true });
     });
+
+  } else if (reqPath === '/shortcut' && req.method === 'POST') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const keys = sanitizeQuickShortcutKeys(body && body.keys);
+      if (!keys) { res.writeHead(400); res.end('Invalid shortcut keys'); return; }
+      json(await runPowerShellScript(SHORTCUT_SCRIPT, [keys], 5000));
+    } catch (e) { err500(e.message); }
 
   } else if (reqPath === '/background' && req.method === 'POST') {
     try {
@@ -1725,7 +2636,7 @@ const server = http.createServer(async (req, res) => {
     // Push current state immediately so the client doesn't wait for the first tick.
     Promise.all([
       getSystemInfo().catch(() => null),
-      getMediaInfo().catch(() => null),
+      getMediaInfo(true).catch(() => null),
       getAudioInfo().catch(() => null),
     ]).then(([sys, media, audio]) => {
       const now = `event: status\ndata: ${JSON.stringify({ muted: isMuted })}\n\n`;
@@ -1780,8 +2691,8 @@ setInterval(() => {
 
 setInterval(async () => {
   if (sseClients.size === 0) return;
-  try { broadcastSSE('media', await getMediaInfo()); } catch {}
-}, 2000).unref();
+  try { broadcastSSE('media', await getMediaInfo(true)); } catch {}
+}, 900).unref();
 
 setInterval(async () => {
   if (sseClients.size === 0) return;

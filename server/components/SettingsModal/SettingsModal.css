@@ -37,7 +37,9 @@ body.has-user-bg .user-bg-layer video:not([hidden]) { opacity: 1; }
 .qbtn-settings,
 .qbtn-tabs,
 .qbtn-focus,
-.qbtn-apps { color: var(--green); }
+.qbtn-media,
+.qbtn-apps,
+.qbtn-shortcut { color: var(--green); }
 
 .status-dot-inline {
   background: var(--green);
@@ -142,7 +144,8 @@ input[type="range"] { accent-color: var(--green); }
   grid-template-areas:
     "preview colors"
     "presets surface"
-    "lock weather"
+    "weather weather"
+    "media media"
     "bg bg";
   align-content: start;
   gap: 8px;
@@ -150,8 +153,8 @@ input[type="range"] { accent-color: var(--green); }
 
 .settings-preview { grid-area: preview; }
 .settings-presets-group { grid-area: presets; }
-.settings-lock-group { grid-area: lock; }
 .settings-weather-group { grid-area: weather; }
+.settings-media-group { grid-area: media; }
 .settings-colors-group { grid-area: colors; }
 .settings-surface-group { grid-area: surface; }
 .settings-bg-group { grid-area: bg; }
@@ -429,8 +432,8 @@ input[type="range"] { accent-color: var(--green); }
     grid-template-areas:
       "preview"
       "presets"
-      "lock"
       "weather"
+      "media"
       "colors"
       "surface"
       "bg";
@@ -593,11 +596,6 @@ input[type="range"] { accent-color: var(--green); }
     grid-row: 2 / 4;
   }
 
-  .settings-lock-group {
-    grid-column: 1;
-    grid-row: 4;
-  }
-
   .settings-colors-group {
     grid-column: 2;
     grid-row: 1;
@@ -616,6 +614,11 @@ input[type="range"] { accent-color: var(--green); }
   .settings-weather-group {
     grid-column: 2 / 4;
     grid-row: 3;
+  }
+
+  .settings-media-group {
+    grid-column: 2 / 4;
+    grid-row: 4;
   }
 
   .theme-presets {

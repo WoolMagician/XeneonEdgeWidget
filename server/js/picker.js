@@ -39,11 +39,18 @@ function closePicker() {
 async function selectDevice(type, id) {
   closePicker();
   const endpoint = type === 'speaker' ? '/speaker/set' : '/mic/set';
+  const deviceList = type === 'speaker'
+    ? ((audioData && Array.isArray(audioData.speakers)) ? audioData.speakers : [])
+    : ((audioData && Array.isArray(audioData.mics)) ? audioData.mics : []);
+  const selectedDevice = deviceList.find(item => item && String(item.id) === String(id)) || null;
+  const payload = type === 'speaker'
+    ? { id, endpointId: selectedDevice && selectedDevice.endpointId ? String(selectedDevice.endpointId) : '' }
+    : { id };
   try {
     const res = await fetch(SERVER + endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error('Device switch failed');
     setOnline();

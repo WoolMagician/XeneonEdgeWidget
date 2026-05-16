@@ -1,0 +1,102 @@
+.media-mode-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 210;
+  opacity: 0;
+  pointer-events: none;
+  background: #040608;
+  transition: opacity 0.16s ease;
+}
+
+.media-mode-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.media-mode-overlay.docked {
+  z-index: 60;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 12px 34px rgba(0,0,0,var(--panel-shadow-alpha));
+}
+
+.media-mode-shell {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  background: rgba(3, 5, 6, 0.96);
+}
+
+.media-mode-btn {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--floating-ui-border);
+  border-radius: 11px;
+  background: var(--floating-ui-bg);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.media-mode-btn:hover {
+  background: rgba(4,8,10,0.6);
+}
+
+.media-mode-btn svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+.media-mode-stage {
+  width: 100%;
+  height: 100%;
+}
+
+.media-mode-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+}
+
+.media-mode-frame[hidden],
+.media-mode-empty[hidden] {
+  display: none !important;
+}
+
+.media-mode-empty {
+  width: 100%;
+  height: 100%;
+  padding: 22px;
+  display: grid;
+  place-items: center;
+  justify-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.media-mode-empty-title {
+  color: var(--muted-text);
+  font-size: 13.5px;
+  font-weight: 750;
+}
+
+.media-mode-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 3;
+  display: grid;
+  justify-items: end;
+  gap: 7px;
+}
+
+.media-mode-overlay.docked .media-mode-controls {
+  display: none;
+}
+
+body.media-mode-active {
+  overflow: hidden;
+}

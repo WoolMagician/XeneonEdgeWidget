@@ -19,7 +19,7 @@ function getDashboardLayout() {
 
 function getActiveDashboardCardGroup() {
   const layout = getDashboardLayout();
-  return DASHBOARD_TAB_IDS.includes(layout.tabs.active) ? layout.tabs.active : 'main';
+  return (layout.tabs.active === 'main' || layout.tabs.active === 'net') ? layout.tabs.active : 'main';
 }
 
 function getDashboardMediaView() {
@@ -47,6 +47,12 @@ function findDirectLayoutControls(parentElement, kind) {
 
 function dashboardLabelKey(kind, itemId) {
   return kind === 'widget' ? `layout_widget_${itemId}` : `layout_card_${itemId}`;
+}
+
+function systemTabLabelKey(tabId) {
+  if (tabId === 'mixer') return 'sys_tab_mixer';
+  if (tabId === 'net') return 'sys_tab_net';
+  return 'sys_tab_main';
 }
 
 function createLayoutIconButton(className, titleKey, iconMarkup, handler) {
@@ -157,7 +163,7 @@ function refreshDashboardLayoutEditor() {
   const tabs = document.createElement('div');
   tabs.className = 'layout-chip-list';
   layout.tabs.order.forEach(tabId => {
-    const tabChip = createDashboardChip(tabId === 'main' ? 'sys_tab_main' : 'sys_tab_net', 'layout_tabs', '', () => setSystemTab(tabId));
+    const tabChip = createDashboardChip(systemTabLabelKey(tabId), 'layout_tabs', '', () => setSystemTab(tabId));
     tabChip.classList.toggle('active', layout.tabs.active === tabId);
     tabs.appendChild(tabChip);
   });
@@ -217,8 +223,8 @@ function applyDashboardCards(layout) {
 
   const audioBlock = document.getElementById('audio-block');
   if (audioBlock && layout.cards.audio) {
-    const hasVisibleAudio = DASHBOARD_CARD_IDS.audio.some(cardId => layout.cards.audio[cardId].visible);
-    audioBlock.dataset.audioHidden = hasVisibleAudio ? 'false' : 'true';
+    const volumeVisible = !!(layout.cards.audio.volume && layout.cards.audio.volume.visible);
+    audioBlock.dataset.audioHidden = volumeVisible ? 'false' : 'true';
   }
 }
 

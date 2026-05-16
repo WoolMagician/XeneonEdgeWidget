@@ -17,6 +17,8 @@
 
 /* ── Design tokens ───────────────────────────────────────── */
 :root {
+  --dashboard-columns: minmax(290px, 1.05fr) minmax(230px, 0.78fr) minmax(330px, 1fr) var(--volume-rail-width);
+  --volume-rail-width: 64px;
   --accent: var(--green);
   --accent-rgb: 30, 215, 96;
   --bg: #070808;
@@ -81,16 +83,22 @@ button { -webkit-tap-highlight-color: transparent; }
 .shell {
   width: 100%;
   height: 100%;
-  padding: 18px;
+  padding: 1px;
+  padding-right: calc(var(--volume-rail-width) + 9px);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: var(--dashboard-columns);
+  grid-template-rows: minmax(0, 1fr);
   gap: 14px;
 }
 
 .dashboard {
+  grid-column: 1 / -1;
+  grid-row: 1;
   min-height: 0;
+  position: relative;
   display: grid;
-  grid-template-columns: minmax(290px, 1.05fr) minmax(230px, 0.78fr) minmax(330px, 1fr);
+  grid-template-columns: var(--dashboard-columns);
+  padding-right: 0;
   gap: 14px;
 }
 

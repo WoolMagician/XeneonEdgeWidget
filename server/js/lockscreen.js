@@ -33,6 +33,7 @@ function openWidgetLockScreen() {
   if (!overlay) return;
   closeWeatherDetails();
   closeSettings();
+  if (typeof closeMediaMode === 'function') closeMediaMode();
   if ($('app-switcher') && !$('app-switcher').hidden) closeAppSwitcher();
   if ($('tab-switcher') && !$('tab-switcher').hidden) closeTabSwitcher();
   overlay.hidden = false;

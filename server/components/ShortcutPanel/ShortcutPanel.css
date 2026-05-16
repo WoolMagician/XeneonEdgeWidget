@@ -1,0 +1,420 @@
+.shortcut-panel {
+  position: relative;
+  overflow: hidden;
+  padding: 10px;
+  background:
+    radial-gradient(88% 108% at 50% 38%, rgba(var(--accent-rgb),0.11), transparent 58%),
+    linear-gradient(145deg, rgba(255,255,255,0.035), rgba(255,255,255,0.012)),
+    var(--panel);
+}
+
+.shortcut-panel::before {
+  content: '';
+  position: absolute;
+  inset: 10px;
+  border-radius: calc(var(--radius) + 4px);
+  border: 1px solid rgba(255,255,255,0.035);
+  pointer-events: none;
+}
+
+.shortcut-grid {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.shortcut-action-tile,
+.shortcut-mic-tile,
+.shortcut-jellyfin-tile,
+.shortcut-spare-tile {
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  background: rgba(8, 12, 12, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  min-width: 0;
+  min-height: 0;
+}
+
+.shortcut-action-tile {
+  --shortcut-primary: #0478ED;
+  --shortcut-primary-rgb: 4, 120, 237;
+  padding: 8px;
+  display: grid;
+  grid-template-rows: 1fr;
+  justify-items: center;
+  align-items: center;
+  gap: 0;
+}
+
+.shortcut-action-tile[data-output-profile="headset"] {
+  --shortcut-primary: #D4A017;
+  --shortcut-primary-rgb: 212, 160, 23;
+}
+
+.shortcut-action-tile[data-output-profile="speaker"] {
+  --shortcut-primary: #0478ED;
+  --shortcut-primary-rgb: 4, 120, 237;
+}
+
+.shortcut-tile-title {
+  display: none;
+}
+
+.shortcut-keys {
+  display: none;
+}
+
+.shortcut-keys.empty {
+  display: none;
+}
+
+.shortcut-btn-wrap {
+  position: relative;
+  width: clamp(84px, 26cqh, 124px);
+  height: clamp(84px, 26cqh, 124px);
+  display: grid;
+  place-items: center;
+}
+
+.shortcut-ring,
+.shortcut-ring2,
+.shortcut-glow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.shortcut-ring {
+  inset: 2px;
+  border: 1px solid rgba(var(--shortcut-primary-rgb),0.34);
+  background: rgba(var(--shortcut-primary-rgb),0.06);
+  box-shadow: inset 0 0 0 8px rgba(var(--shortcut-primary-rgb),0.04);
+}
+
+.shortcut-ring2 {
+  inset: -7px;
+  padding: 1px;
+  border: 0;
+  background: conic-gradient(from 90deg, transparent 0 24%, rgba(var(--shortcut-primary-rgb),0.84) 32%, transparent 42% 62%, rgba(var(--shortcut-primary-rgb),0.48) 72%, transparent 82% 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0.78;
+  animation: shortcut-orbit 7s linear infinite;
+}
+
+.shortcut-glow {
+  inset: 14px;
+  background: rgba(var(--shortcut-primary-rgb),0.2);
+  filter: blur(18px);
+  opacity: 0.7;
+}
+
+.shortcut-btn {
+  position: relative;
+  z-index: 1;
+  width: clamp(64px, 19cqh, 90px);
+  height: clamp(64px, 19cqh, 90px);
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.12);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  background: var(--shortcut-primary);
+  box-shadow: 0 14px 32px rgba(var(--shortcut-primary-rgb),0.28), inset 0 1px 0 rgba(255,255,255,0.24), inset 0 -12px 24px rgba(0,0,0,0.16);
+  transition: transform 0.12s ease, background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+}
+
+.shortcut-btn svg {
+  width: clamp(24px, 7.4cqh, 34px);
+  height: clamp(24px, 7.4cqh, 34px);
+  fill: #fff;
+  filter: drop-shadow(0 1px 4px rgba(0,0,0,0.34));
+}
+
+.shortcut-btn:hover { transform: translateY(-1px); }
+.shortcut-btn:active { transform: scale(0.94); }
+
+.shortcut-btn:disabled {
+  cursor: default;
+  opacity: 0.56;
+  background: linear-gradient(145deg, #5f6966, #404948);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.26), inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -10px 20px rgba(0,0,0,0.2);
+}
+
+.shortcut-mic-tile {
+  padding: 8px;
+  display: grid;
+  grid-template-rows: 1fr;
+  justify-items: center;
+  align-items: center;
+  gap: 0;
+}
+
+.shortcut-mic-tile .mic-head {
+  display: none;
+}
+
+.shortcut-mic-tile .status-label {
+  min-height: 22px;
+  padding: 0 11px;
+  font-size: 10.5px;
+  letter-spacing: 0.45px;
+}
+
+.shortcut-mic-tile .mic-context {
+  width: 100%;
+  font-size: 11.5px;
+}
+
+.shortcut-mic-tile .btn-wrap {
+  grid-area: auto;
+  width: clamp(86px, 26cqh, 124px);
+  height: clamp(86px, 26cqh, 124px);
+  margin: 0 auto;
+  justify-self: center;
+  align-self: center;
+}
+
+.shortcut-mic-tile .mic-btn {
+  width: clamp(64px, 19cqh, 90px);
+  height: clamp(64px, 19cqh, 90px);
+}
+
+.shortcut-mic-tile .mic-btn svg {
+  width: clamp(25px, 7.4cqh, 34px);
+  height: clamp(25px, 7.4cqh, 34px);
+}
+
+/* Force unmuted mic orbit/glow to green in this panel (muted stays red). */
+.shortcut-mic-tile .ring.active {
+  border-color: rgba(30,215,96,0.34);
+  background: rgba(30,215,96,0.035);
+  box-shadow: inset 0 0 0 8px rgba(30,215,96,0.035);
+}
+
+.shortcut-mic-tile .ring2.active {
+  background: conic-gradient(from 90deg, transparent 0 24%, rgba(30,215,96,0.80) 32%, transparent 42% 62%, rgba(30,215,96,0.45) 72%, transparent 82% 100%);
+}
+
+.shortcut-mic-tile .glow.active {
+  background: rgba(30,215,96,0.14);
+  opacity: 0.7;
+}
+
+.shortcut-mic-tile .ring.muted {
+  border-color: rgba(229,57,53,0.34);
+  background: rgba(229,57,53,0.035);
+  box-shadow: inset 0 0 0 8px rgba(229,57,53,0.03);
+}
+
+.shortcut-mic-tile .ring2.muted {
+  background: conic-gradient(from 90deg, transparent 0 24%, rgba(229,57,53,0.82) 32%, transparent 42% 62%, rgba(229,57,53,0.46) 72%, transparent 82% 100%);
+}
+
+.shortcut-mic-tile .glow.muted {
+  background: rgba(229,57,53,0.15);
+  opacity: 0.62;
+}
+
+.shortcut-jellyfin-tile {
+  appearance: none;
+  cursor: pointer;
+  padding: 8px;
+  display: grid;
+  place-items: center;
+  transition: transform 0.12s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.shortcut-jellyfin-wrap {
+  --jf-rgb: 170, 110, 255;
+  position: relative;
+  width: clamp(84px, 26cqh, 124px);
+  height: clamp(84px, 26cqh, 124px);
+  display: grid;
+  place-items: center;
+}
+
+.shortcut-jellyfin-ring,
+.shortcut-jellyfin-ring2,
+.shortcut-jellyfin-glow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.shortcut-jellyfin-ring {
+  inset: 2px;
+  border: 1px solid rgba(var(--jf-rgb),0.52);
+  background: rgba(var(--jf-rgb),0.12);
+  box-shadow: inset 0 0 0 8px rgba(var(--jf-rgb),0.085);
+}
+
+.shortcut-jellyfin-ring2 {
+  inset: -7px;
+  padding: 1px;
+  border: 0;
+  background: conic-gradient(from 90deg, transparent 0 24%, rgba(var(--jf-rgb),1) 32%, transparent 42% 62%, rgba(var(--jf-rgb),0.78) 72%, transparent 82% 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 1;
+  animation: shortcut-orbit 7s linear infinite;
+  will-change: transform;
+}
+
+.shortcut-jellyfin-glow {
+  inset: 14px;
+  background: rgba(var(--jf-rgb),0.36);
+  filter: blur(18px);
+  opacity: 1;
+}
+
+.shortcut-jellyfin-core {
+  position: relative;
+  z-index: 1;
+  width: clamp(64px, 19cqh, 90px);
+  height: clamp(64px, 19cqh, 90px);
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.14);
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, #2a2f36, #171b20);
+  box-shadow: 0 14px 32px rgba(11,14,18,0.5), inset 0 1px 0 rgba(255,255,255,0.17), inset 0 -12px 24px rgba(0,0,0,0.28);
+}
+
+.shortcut-jellyfin-icon {
+  width: clamp(28px, 8cqh, 40px);
+  height: clamp(28px, 8cqh, 40px);
+  object-fit: contain;
+  display: block;
+  filter: brightness(1.24) saturate(1.04) drop-shadow(0 1px 4px rgba(0,0,0,0.45));
+}
+
+.shortcut-jellyfin-tile:hover {
+  transform: translateY(-1px);
+}
+
+.shortcut-jellyfin-tile:active {
+  transform: scale(0.97);
+}
+
+.shortcut-jellyfin-tile.active {
+  border-color: rgba(170,110,255,0.42);
+  background: rgba(11, 9, 18, 0.72);
+}
+
+.shortcut-jellyfin-tile.active .shortcut-jellyfin-core {
+  box-shadow: 0 14px 32px rgba(11,14,18,0.62), inset 0 1px 0 rgba(255,255,255,0.2), inset 0 -12px 24px rgba(0,0,0,0.3);
+}
+
+.shortcut-jellyfin-tile.active .shortcut-jellyfin-ring {
+  border-color: rgba(170,110,255,0.46);
+  background: rgba(170,110,255,0.07);
+}
+
+.shortcut-jellyfin-tile.active .shortcut-jellyfin-ring2 {
+  opacity: 0.95;
+}
+
+.shortcut-jellyfin-tile.active .shortcut-jellyfin-glow {
+  opacity: 0.9;
+}
+
+.shortcut-jellyfin-tile:focus-visible {
+  outline: 2px solid rgba(170,110,255,0.42);
+  outline-offset: 2px;
+}
+
+.shortcut-jellyfin-tile[disabled] {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.shortcut-jellyfin-tile[disabled] .shortcut-jellyfin-core {
+  background: linear-gradient(145deg, #6e5e85, #4f4462);
+  box-shadow:
+    0 10px 24px rgba(0,0,0,0.24),
+    inset 0 1px 0 rgba(255,255,255,0.16),
+    inset 0 -10px 20px rgba(0,0,0,0.22);
+}
+
+.shortcut-jellyfin-tile[disabled] .shortcut-jellyfin-ring2 {
+  animation-duration: 11s;
+  opacity: 0.45;
+}
+
+.shortcut-spare-tile {
+  display: grid;
+  place-items: center;
+  border-color: rgba(185,195,200,0.18);
+  background: rgba(14, 18, 20, 0.68);
+}
+
+.shortcut-placeholder-wrap {
+  --placeholder-rgb: 150, 160, 168;
+  position: relative;
+  width: clamp(84px, 26cqh, 124px);
+  height: clamp(84px, 26cqh, 124px);
+  display: grid;
+  place-items: center;
+}
+
+.shortcut-placeholder-ring,
+.shortcut-placeholder-ring2,
+.shortcut-placeholder-glow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.shortcut-placeholder-ring {
+  inset: 2px;
+  border: 1px solid rgba(var(--placeholder-rgb),0.5);
+  background: rgba(var(--placeholder-rgb),0.12);
+  box-shadow: inset 0 0 0 8px rgba(var(--placeholder-rgb),0.085);
+}
+
+.shortcut-placeholder-ring2 {
+  inset: -7px;
+  padding: 1px;
+  border: 0;
+  background: conic-gradient(from 90deg, transparent 0 24%, rgba(var(--placeholder-rgb),1) 32%, transparent 42% 62%, rgba(var(--placeholder-rgb),0.74) 72%, transparent 82% 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 1;
+  animation: shortcut-orbit 7s linear infinite;
+  will-change: transform;
+}
+
+.shortcut-placeholder-glow {
+  inset: 14px;
+  background: rgba(var(--placeholder-rgb),0.34);
+  filter: blur(18px);
+  opacity: 1;
+}
+
+.shortcut-placeholder-core {
+  position: relative;
+  z-index: 1;
+  width: clamp(64px, 19cqh, 90px);
+  height: clamp(64px, 19cqh, 90px);
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: linear-gradient(145deg, #737d85, #4d565e);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.15), inset 0 -10px 20px rgba(0,0,0,0.24);
+}
+
+@keyframes shortcut-orbit {
+  to { transform: rotate(360deg); }
+}

@@ -1,6 +1,7 @@
 param(
-  [ValidateSet('info', 'playpause', 'next', 'previous')]
-  [string]$Action = 'info'
+  [ValidateSet('info', 'playpause', 'next', 'previous', 'seek')]
+  [string]$Action = 'info',
+  [int]$PositionSeconds = -1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,6 +38,7 @@ try {
   $sessions = @($manager.GetSessions())
 
   function Get-AppName($Source, $Title, $Album) {
+    if (($Source -match 'Jellyfin') -or ($Title -match 'Jellyfin') -or ($Album -match 'Jellyfin')) { return 'Jellyfin' }
     if ($Source -match 'Spotify') { return 'Spotify' }
     if (($Title -match 'YouTube') -or ($Album -match 'YouTube')) { return 'YouTube' }
     if ($Source -match 'Chrome|MSEdge|Firefox|Brave|Opera') { return 'YouTube' }
@@ -71,7 +73,8 @@ try {
     elseif ($status -eq 'Stopped') { $score += 50 }
     if ($title) { $score += 120 }
     if ($artist) { $score += 40 }
-    if ($app -match 'Spotify|YouTube|Browser') { $score += 80 }
+    if ($app -match 'Spotify|YouTube|Jellyfin|Browser') { $score += 80 }
+    if (($title -match 'Jellyfin') -or ($album -match 'Jellyfin') -or ($source -match 'Jellyfin')) { $score += 220 }
     if ($IsCurrent) { $score += 15 }
     if ($source -match 'ShellExperienceHost|System|Windows') { $score -= 500 }
     if ($title -match 'Microsoft|Windows|Operating System') { $score -= 500 }
@@ -113,10 +116,28 @@ try {
   }
 
   if ($Action -ne 'info') {
+    $ok = $false
+    $seekPosition = 0
+    $seekDuration = 0
     switch ($Action) {
       'playpause' { $ok = Await ($session.TryTogglePlayPauseAsync()) ([bool]) }
       'next'      { $ok = Await ($session.TrySkipNextAsync())       ([bool]) }
       'previous'  { $ok = Await ($session.TrySkipPreviousAsync())   ([bool]) }
+      'seek' {
+        $timeline = $session.GetTimelineProperties()
+        try {
+          $seekDuration = [Math]::Max(0, [int][Math]::Round(($timeline.EndTime - $timeline.StartTime).TotalSeconds))
+        } catch {
+          $seekDuration = 0
+        }
+        $seekPosition = [Math]::Max(0, [int]$PositionSeconds)
+        if ($seekDuration -gt 0) { $seekPosition = [Math]::Min($seekPosition, $seekDuration) }
+        $ticks = [int64]$seekPosition * 10000000L
+        $ok = Await ($session.TryChangePlaybackPositionAsync($ticks)) ([bool])
+      }
+    }
+    if ($Action -eq 'seek') {
+      Complete-Json @{ ok = [bool]$ok; position = $seekPosition; duration = $seekDuration }
     }
     Complete-Json @{ ok = [bool]$ok }
   }

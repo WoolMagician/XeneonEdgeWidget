@@ -14,6 +14,7 @@ function toggleTabSwitcher(forceOpen) {
   const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : bd.hidden;
   bd.hidden = !shouldOpen;
   if (shouldOpen) {
+    if (typeof closeMediaMode === 'function') closeMediaMode();
     closeAppSwitcher();
     renderTabSwitcher();
     const active = bd.querySelector('.tab-card.active') || bd.querySelector('.tab-card');

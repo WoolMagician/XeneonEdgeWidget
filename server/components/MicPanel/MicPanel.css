@@ -3,10 +3,10 @@
   container-type: size;
   container-name: micpanel;
   display: grid;
-  grid-template-columns: auto auto;
+  grid-template-columns: auto;
   grid-template-areas:
-    'head head'
-    'button volume';
+    'head'
+    'button';
   justify-content: center;
   justify-items: center;
   align-content: center;
@@ -313,10 +313,10 @@
 
 @container micpanel (min-aspect-ratio: 3/2) {
   .mic-panel {
-    grid-template-columns: auto auto;
+    grid-template-columns: auto;
     grid-template-areas:
-      'head head'
-      'button volume';
+      'head'
+      'button';
     justify-content: center;
     justify-items: center;
     align-items: center;
@@ -377,4 +377,283 @@
     height: clamp(13px, 3.5cqh, 18px);
   }
   .mic-vol-label { font-size: clamp(8px, 2.2cqh, 11px); }
+}
+
+/* Center column redesign:
+   this widget now hosts calendar/time/weather + future spare slots. */
+.mic-panel {
+  container-type: normal;
+  container-name: none;
+  display: block;
+  padding: 10px;
+  text-align: initial;
+}
+
+/* Center column: keep inner spacing, remove outer container chrome */
+body:not([data-panel]) .center-column > .mic-panel {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+body:not([data-panel]) .center-column > .mic-panel::before {
+  display: none;
+}
+
+.mic-panel .center-grid {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr) minmax(0, 0.7fr);
+  gap: 8px;
+}
+
+.center-calendar-tile,
+.center-time-tile,
+.center-weather-tile,
+.mic-panel .spare-tile {
+  min-width: 0;
+  min-height: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(8, 12, 12, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+.center-calendar-tile {
+  grid-column: 1;
+  grid-row: 1;
+  position: relative;
+  border: 1px solid rgba(0,0,0,0.08);
+  background: #e6e8e9;
+  color: #2f3c40;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.24);
+  overflow: hidden;
+  cursor: pointer;
+  padding: 0;
+  display: grid;
+  grid-template-rows: minmax(34px, 34px) minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.center-calendar-tile:hover { transform: translateY(-1px); }
+.center-calendar-tile:active { transform: scale(0.985); }
+
+.center-date-top {
+  grid-row: 1;
+  grid-column: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #f9413a;
+  border-bottom: 1px solid rgba(0,0,0,0.14);
+}
+
+.center-date-rings {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 34px;
+  display: flex;
+  justify-content: space-around;
+  align-items: flex-start;
+  pointer-events: none;
+  z-index: 2;
+  --ring-hole-size: 18px;
+  --ring-hole-center-y: 17px;
+  --ring-peg-width: 8px;
+  --ring-peg-height: calc(var(--ring-hole-center-y) + (var(--ring-peg-width) / 2));
+}
+
+.center-date-rings::before,
+.center-date-rings::after {
+  content: "";
+  position: absolute;
+  top: var(--ring-hole-center-y);
+  width: var(--ring-hole-size);
+  height: var(--ring-hole-size);
+  border-radius: 50%;
+  background: #e6e8e9;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+}
+
+.center-date-rings::before { left: 25%; }
+.center-date-rings::after { left: 75%; }
+
+.center-date-rings span {
+  width: var(--ring-peg-width);
+  height: var(--ring-peg-height);
+  border-radius: 0 0 999px 999px;
+  background: #3e5b5f;
+  z-index: 2;
+}
+
+.center-date-body {
+  grid-row: 2;
+  grid-column: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  place-items: center;
+  column-gap: 6px;
+  padding: 8px 10px 10px;
+  z-index: 1;
+}
+
+.center-date-month {
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+  color: #405f63;
+}
+
+.center-date-day {
+  font-size: 56px;
+  line-height: 0.88;
+  font-weight: 860;
+  color: #405f63;
+}
+
+.center-time-tile {
+  grid-column: 2;
+  grid-row: 1;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 4px;
+  padding: 8px 6px;
+  background:
+    radial-gradient(90% 120% at 0% 0%, rgba(var(--accent-rgb),0.16), transparent 56%),
+    var(--floating-ui-bg);
+  border: 1px solid var(--floating-ui-border);
+}
+
+.center-time-main {
+  color: #eef5f2;
+  font-size: clamp(40px, 9cqh, 62px);
+  font-weight: 900;
+  line-height: 0.92;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.center-time-sub {
+  color: #c8d7d1;
+  font-size: clamp(20px, 5.1cqh, 30px);
+  font-weight: 820;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.center-time-seconds-marker {
+  position: relative;
+  width: min(76%, 230px);
+  height: 12px;
+  border-radius: 999px;
+  background:
+    linear-gradient(to right, rgba(255,255,255,0.08), rgba(var(--accent-rgb),0.28), rgba(255,255,255,0.08));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+  overflow: hidden;
+  --marker-dot-size: 10px;
+  --marker-trail-max: 34px;
+}
+
+.center-time-seconds-trail {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 0;
+  height: 4px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.center-time-seconds-marker.dir-right .center-time-seconds-trail {
+  background: linear-gradient(to right, rgba(var(--accent-rgb),0), rgba(var(--accent-rgb),0.82));
+}
+
+.center-time-seconds-marker.dir-left .center-time-seconds-trail {
+  background: linear-gradient(to left, rgba(var(--accent-rgb),0), rgba(var(--accent-rgb),0.82));
+}
+
+.center-time-seconds-dot {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: var(--marker-dot-size);
+  height: var(--marker-dot-size);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow:
+    0 0 0 2px rgba(7, 12, 11, 0.55),
+    0 0 12px rgba(var(--accent-rgb), 0.85);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.center-weather-tile {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  border: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 14px;
+  background:
+    radial-gradient(90% 120% at 0% 0%, rgba(var(--accent-rgb),0.16), transparent 56%),
+    var(--floating-ui-bg);
+  border: 1px solid var(--floating-ui-border);
+}
+
+.center-weather-tile svg {
+  width: 54px;
+  height: 54px;
+  fill: var(--accent);
+  filter: var(--icon-readability-filter);
+  flex-shrink: 0;
+}
+
+.center-weather-temp {
+  color: #ecf6f2;
+  font-size: 48px;
+  font-weight: 920;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.center-weather-place {
+  min-width: 0;
+  color: #c0d0ca;
+  font-size: 32px;
+  font-weight: 820;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mic-panel .spare-tile {
+  display: grid;
+  place-items: center;
+  color: #d5ebe0;
+  font-size: 31px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  border-color: rgba(var(--accent-rgb),0.2);
+  background:
+    radial-gradient(120% 120% at 0% 0%, rgba(var(--accent-rgb),0.15), transparent 60%),
+    rgba(10, 33, 22, 0.72);
 }

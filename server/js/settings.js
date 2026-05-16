@@ -3,13 +3,20 @@
 const SETTINGS_STORAGE_KEY = 'xeneonedge.settings.v1';
 const SETTINGS_MAX_BACKGROUND_BYTES = 200 * 1024 * 1024;
 const SETTINGS_MIN_PANEL_ALPHA = 0.18;
+const SETTINGS_NEWS_MIN_REFRESH_MINUTES = 1;
+const SETTINGS_NEWS_MAX_REFRESH_MINUTES = 120;
+const SETTINGS_NEWS_DEFAULT_REFRESH_MINUTES = 10;
+const SETTINGS_NEWS_MIN_RESULTS = 1;
+const SETTINGS_NEWS_MAX_RESULTS = 50;
+const SETTINGS_NEWS_DEFAULT_RESULTS = 10;
+const SETTINGS_NEWS_DEFAULT_FEED_URL = 'https://news.google.com/rss/search?q=notizie%20mondo&hl=it-IT&gl=IT&ceid=IT:it&num=10';
 const SETTINGS_BACKGROUND_TYPES = Object.freeze(new Set([
   'image/png', 'image/jpeg', 'image/webp', 'image/gif', 'video/mp4', 'video/webm',
 ]));
 const SETTINGS_BACKGROUND_EXTENSIONS = Object.freeze(new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'mp4', 'webm']));
 
-const DASHBOARD_WIDGET_IDS = Object.freeze(['media', 'mic', 'system', 'notes', 'tasks']);
-const DASHBOARD_TAB_IDS = Object.freeze(['main', 'net']);
+const DASHBOARD_WIDGET_IDS = Object.freeze(['media', 'mic', 'system', 'shortcut', 'tasks']);
+const DASHBOARD_TAB_IDS = Object.freeze(['mixer', 'main', 'net']);
 const CALENDAR_TAB_IDS = Object.freeze(['calendar', 'tasks']);
 const MEDIA_VIEW_IDS = Object.freeze(['media', 'calendar']);
 const DASHBOARD_CARD_IDS = Object.freeze({
@@ -24,7 +31,7 @@ const DEFAULT_DASHBOARD_LAYOUT = Object.freeze({
     media: Object.freeze({ order: 0, size: 'tall', visible: true }),
     mic: Object.freeze({ order: 1, size: 'normal', visible: true }),
     system: Object.freeze({ order: 2, size: 'tall', visible: true }),
-    notes: Object.freeze({ order: 3, size: 'normal', visible: true }),
+    shortcut: Object.freeze({ order: 3, size: 'normal', visible: true }),
     tasks: Object.freeze({ order: 4, size: 'normal', visible: false }),
   }),
   cards: Object.freeze({
@@ -46,7 +53,7 @@ const DEFAULT_DASHBOARD_LAYOUT = Object.freeze({
       microphone: Object.freeze({ order: 2, size: 'normal', visible: true }),
     }),
   }),
-  tabs: Object.freeze({ order: ['main', 'net'], active: 'main' }),
+  tabs: Object.freeze({ order: ['mixer', 'main', 'net'], active: 'mixer' }),
   calendarTabs: Object.freeze({ order: ['calendar', 'tasks'], active: 'calendar' }),
   mediaView: Object.freeze({ active: 'media' }),
 });
@@ -61,6 +68,14 @@ const DEFAULT_HUB_SETTINGS = Object.freeze({
   backgroundMedia: null,
   lockWidgets: Object.freeze({ clock: true, weather: true, media: true, calendar: true }),
   weather: Object.freeze({ mode: 'auto', city: '' }),
+  news: Object.freeze({
+    feedUrl: SETTINGS_NEWS_DEFAULT_FEED_URL,
+    refreshMinutes: SETTINGS_NEWS_DEFAULT_REFRESH_MINUTES,
+    maxResults: SETTINGS_NEWS_DEFAULT_RESULTS,
+  }),
+  mediaMode: Object.freeze({ url: '' }),
+  quickOutputSwitch: Object.freeze({ deviceAId: '', deviceBId: '' }),
+  quickShortcut: Object.freeze({ keys: '' }),
   dashboardLayout: DEFAULT_DASHBOARD_LAYOUT,
 });
 
@@ -139,6 +154,76 @@ function normalizeWeatherSettings(value) {
   };
 }
 
+function sanitizeNewsFeedUrl(value) {
+  const raw = String(value || '').trim().slice(0, 2048);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/.test(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeNewsSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const feedUrl = sanitizeNewsFeedUrl(source.feedUrl) || SETTINGS_NEWS_DEFAULT_FEED_URL;
+  const refreshRaw = Number(source.refreshMinutes);
+  const refreshMinutes = Number.isFinite(refreshRaw)
+    ? Math.max(SETTINGS_NEWS_MIN_REFRESH_MINUTES, Math.min(SETTINGS_NEWS_MAX_REFRESH_MINUTES, Math.round(refreshRaw)))
+    : SETTINGS_NEWS_DEFAULT_REFRESH_MINUTES;
+  const maxResultsRaw = Number(source.maxResults);
+  const maxResults = Number.isFinite(maxResultsRaw)
+    ? Math.max(SETTINGS_NEWS_MIN_RESULTS, Math.min(SETTINGS_NEWS_MAX_RESULTS, Math.round(maxResultsRaw)))
+    : SETTINGS_NEWS_DEFAULT_RESULTS;
+  return { feedUrl, refreshMinutes, maxResults };
+}
+
+function sanitizeMediaModeUrl(value) {
+  const raw = String(value || '').trim().slice(0, 2048);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/.test(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeMediaModeSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return { url: sanitizeMediaModeUrl(source.url) };
+}
+
+function sanitizeOutputDeviceId(value) {
+  const raw = String(value || '').trim().slice(0, 512);
+  if (!raw) return '';
+  if (/[\r\n]/.test(raw)) return '';
+  return raw;
+}
+
+function normalizeQuickOutputSwitchSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const deviceAId = sanitizeOutputDeviceId(source.deviceAId);
+  const deviceBId = sanitizeOutputDeviceId(source.deviceBId);
+  return { deviceAId, deviceBId };
+}
+
+function sanitizeQuickShortcutKeys(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.length > 64) return '';
+  if (!/^[\x20-\x7E]+$/.test(raw)) return '';
+  return raw;
+}
+
+function normalizeQuickShortcutSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return { keys: sanitizeQuickShortcutKeys(source.keys) };
+}
+
 function cloneDashboardLayout(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -194,11 +279,17 @@ function normalizeMediaView(source) {
 function normalizeDashboardTabs(sourceTabs) {
   const source = sourceTabs && typeof sourceTabs === 'object' ? sourceTabs : {};
   const sourceOrder = Array.isArray(source.order) ? source.order : DEFAULT_DASHBOARD_LAYOUT.tabs.order;
+  const hasMixerInSource = sourceOrder.includes('mixer');
   const order = sourceOrder.filter(tab => DASHBOARD_TAB_IDS.includes(tab));
   DASHBOARD_TAB_IDS.forEach(tab => { if (!order.includes(tab)) order.push(tab); });
+  const activeSource = source.active;
+  let active = DASHBOARD_TAB_IDS.includes(activeSource) ? activeSource : DEFAULT_DASHBOARD_LAYOUT.tabs.active;
+  if (!hasMixerInSource && (activeSource === undefined || activeSource === 'main' || activeSource === 'net')) {
+    active = 'mixer';
+  }
   return {
     order,
-    active: DASHBOARD_TAB_IDS.includes(source.active) ? source.active : DEFAULT_DASHBOARD_LAYOUT.tabs.active,
+    active,
   };
 }
 
@@ -250,6 +341,10 @@ function normalizeSettings(source) {
     backgroundMedia: sanitizeBackgroundMedia(value.backgroundMedia),
     lockWidgets: normalizeLockWidgets(value.lockWidgets),
     weather: normalizeWeatherSettings(value.weather),
+    news: normalizeNewsSettings(value.news),
+    mediaMode: normalizeMediaModeSettings(value.mediaMode),
+    quickOutputSwitch: normalizeQuickOutputSwitchSettings(value.quickOutputSwitch),
+    quickShortcut: normalizeQuickShortcutSettings(value.quickShortcut),
     dashboardLayout: normalizeDashboardLayout(value.dashboardLayout),
   };
 }
@@ -477,6 +572,10 @@ function applyHubSettings() {
     image.hidden = false;
     document.body.dataset.bgType = 'image';
   }
+
+  if (typeof refreshMediaModeFromSettings === 'function') refreshMediaModeFromSettings();
+  if (typeof refreshNewsTickerFromSettings === 'function') refreshNewsTickerFromSettings();
+  if (typeof syncQuickShortcutButton === 'function') syncQuickShortcutButton();
 }
 
 function formatPercent(value) {
@@ -512,6 +611,78 @@ function renderSettingsPresets() {
     btn.append(swatch, name);
     return btn;
   }));
+}
+
+function getAvailableSpeakerOutputs() {
+  const speakers = audioData && Array.isArray(audioData.speakers) ? audioData.speakers : [];
+  return speakers
+    .filter(device => device && device.id)
+    .map(device => ({
+      id: String(device.id),
+      endpointId: String(device.endpointId || '').trim(),
+      switchKey: String(device.endpointId || device.id || '').trim(),
+      name: String(device.name || '').trim(),
+      label: String(device.label || '').trim(),
+      isDefault: !!device.isDefault,
+    }));
+}
+
+function buildSpeakerOutputOptionLabel(device) {
+  const name = String(device && device.name || '').trim();
+  const label = String(device && device.label || '').trim();
+  if (name && label && name.toLowerCase() !== label.toLowerCase()) return `${name} (${label})`;
+  return name || label || '--';
+}
+
+function syncNativeSelectVisual(select) {
+  if (!select) return;
+  const wrap = select.previousElementSibling;
+  if (!wrap || !wrap.classList || !wrap.classList.contains('cs-wrap')) return;
+  const label = wrap.querySelector('.cs-label');
+  if (!label) return;
+  const option = Array.from(select.options).find(item => item.value === select.value) || select.options[0];
+  label.textContent = option ? option.textContent.trim() : '';
+}
+
+function renderQuickOutputSwitchControls() {
+  const selectA = $('settings-output-device-a');
+  const selectB = $('settings-output-device-b');
+  if (!selectA || !selectB) return;
+
+  const config = normalizeQuickOutputSwitchSettings(hubSettings.quickOutputSwitch);
+  const speakers = getAvailableSpeakerOutputs();
+  const hasData = speakers.length > 0;
+
+  const buildOptions = select => {
+    const previousValue = select.value;
+    select.textContent = '';
+
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = hasData ? t('settings_output_switch_device_placeholder') : t('settings_output_switch_devices_loading');
+    select.appendChild(placeholder);
+
+    speakers.forEach(device => {
+      const option = document.createElement('option');
+      option.value = device.switchKey || device.id;
+      option.textContent = buildSpeakerOutputOptionLabel(device);
+      select.appendChild(option);
+    });
+
+    const preferred = select === selectA ? config.deviceAId : config.deviceBId;
+    const next = speakers.some(device => device.switchKey === preferred || device.id === preferred || device.endpointId === preferred)
+      ? preferred
+      : (
+        speakers.some(device => device.switchKey === previousValue || device.id === previousValue || device.endpointId === previousValue)
+          ? previousValue
+          : ''
+      );
+    select.value = next;
+    syncNativeSelectVisual(select);
+  };
+
+  buildOptions(selectA);
+  buildOptions(selectB);
 }
 
 function syncSettingsControls() {
@@ -550,6 +721,15 @@ function syncSettingsControls() {
   syncLangButtons();
   syncLockWidgetSettings();
   syncWeatherSettingsControls();
+  const newsFeedUrl = $('settings-news-feed-url');
+  if (newsFeedUrl) newsFeedUrl.value = (hubSettings.news && hubSettings.news.feedUrl) || SETTINGS_NEWS_DEFAULT_FEED_URL;
+  const newsRefresh = $('settings-news-refresh-minutes');
+  if (newsRefresh) newsRefresh.value = String((hubSettings.news && hubSettings.news.refreshMinutes) || SETTINGS_NEWS_DEFAULT_REFRESH_MINUTES);
+  const newsMaxResults = $('settings-news-max-results');
+  if (newsMaxResults) newsMaxResults.value = String((hubSettings.news && hubSettings.news.maxResults) || SETTINGS_NEWS_DEFAULT_RESULTS);
+  const mediaUrl = $('settings-media-url');
+  if (mediaUrl) mediaUrl.value = hubSettings.mediaMode.url || '';
+  renderQuickOutputSwitchControls();
 }
 
 function renderSettingsModal() {
@@ -697,6 +877,215 @@ function updateWeatherCity(value, commit = false) {
   if (commit) syncWeatherSettingsControls();
   if (hubSettings.weather.mode === 'manual' && hubSettings.weather.city) queueWeatherSettingsRefresh(450);
   setSettingsStatus('settings_weather_saved', 'ok');
+}
+
+function updateNewsFeedUrl(value, commit = false) {
+  const raw = String(value || '').trim();
+  const normalized = sanitizeNewsFeedUrl(raw);
+  const input = $('settings-news-feed-url');
+  const current = hubSettings.news && hubSettings.news.feedUrl ? hubSettings.news.feedUrl : SETTINGS_NEWS_DEFAULT_FEED_URL;
+
+  if (raw && !normalized) {
+    if (commit) {
+      if (input) input.value = current;
+      setSettingsStatus('settings_news_invalid_url', 'error');
+    }
+    return;
+  }
+
+  const nextValue = normalized || SETTINGS_NEWS_DEFAULT_FEED_URL;
+  if (nextValue === current) {
+    if (commit && input) input.value = current;
+    return;
+  }
+
+  hubSettings = normalizeSettings({
+    ...hubSettings,
+    news: { ...hubSettings.news, feedUrl: nextValue },
+  });
+  saveHubSettings();
+  if (input && commit) input.value = hubSettings.news.feedUrl || SETTINGS_NEWS_DEFAULT_FEED_URL;
+  if (typeof refreshNewsTickerFromSettings === 'function') {
+    if (commit) {
+      postHubSettingsToServer()
+        .catch(() => {})
+        .finally(() => refreshNewsTickerFromSettings({ forceRefresh: true }));
+    }
+  }
+  if (commit) setSettingsStatus('settings_news_saved', 'ok');
+}
+
+function updateNewsRefreshMinutes(value, commit = false) {
+  const raw = String(value ?? '').trim();
+  const input = $('settings-news-refresh-minutes');
+  const current = hubSettings.news && Number.isFinite(Number(hubSettings.news.refreshMinutes))
+    ? Number(hubSettings.news.refreshMinutes)
+    : SETTINGS_NEWS_DEFAULT_REFRESH_MINUTES;
+
+  if (!raw) {
+    if (commit) {
+      if (input) input.value = String(current);
+      setSettingsStatus('settings_news_invalid_refresh', 'error');
+    }
+    return;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    if (commit) {
+      if (input) input.value = String(current);
+      setSettingsStatus('settings_news_invalid_refresh', 'error');
+    }
+    return;
+  }
+
+  const normalized = Math.max(SETTINGS_NEWS_MIN_REFRESH_MINUTES, Math.min(SETTINGS_NEWS_MAX_REFRESH_MINUTES, Math.round(parsed)));
+  if (normalized === current) {
+    if (commit && input) input.value = String(current);
+    return;
+  }
+
+  hubSettings = normalizeSettings({
+    ...hubSettings,
+    news: { ...hubSettings.news, refreshMinutes: normalized },
+  });
+  saveHubSettings();
+  if (input && commit) input.value = String(hubSettings.news.refreshMinutes || SETTINGS_NEWS_DEFAULT_REFRESH_MINUTES);
+  if (typeof refreshNewsTickerFromSettings === 'function') refreshNewsTickerFromSettings();
+  if (commit) setSettingsStatus('settings_news_saved', 'ok');
+}
+
+function updateNewsMaxResults(value, commit = false) {
+  const raw = String(value ?? '').trim();
+  const input = $('settings-news-max-results');
+  const current = hubSettings.news && Number.isFinite(Number(hubSettings.news.maxResults))
+    ? Number(hubSettings.news.maxResults)
+    : SETTINGS_NEWS_DEFAULT_RESULTS;
+
+  if (!raw) {
+    if (commit) {
+      if (input) input.value = String(current);
+      setSettingsStatus('settings_news_invalid_max_results', 'error');
+    }
+    return;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    if (commit) {
+      if (input) input.value = String(current);
+      setSettingsStatus('settings_news_invalid_max_results', 'error');
+    }
+    return;
+  }
+
+  const normalized = Math.max(SETTINGS_NEWS_MIN_RESULTS, Math.min(SETTINGS_NEWS_MAX_RESULTS, Math.round(parsed)));
+  if (normalized === current) {
+    if (commit && input) input.value = String(current);
+    return;
+  }
+
+  hubSettings = normalizeSettings({
+    ...hubSettings,
+    news: { ...hubSettings.news, maxResults: normalized },
+  });
+  saveHubSettings();
+  if (input && commit) input.value = String(hubSettings.news.maxResults || SETTINGS_NEWS_DEFAULT_RESULTS);
+  if (typeof refreshNewsTickerFromSettings === 'function') {
+    if (commit) {
+      postHubSettingsToServer()
+        .catch(() => {})
+        .finally(() => refreshNewsTickerFromSettings({ forceRefresh: true }));
+    } else {
+      refreshNewsTickerFromSettings({ reflowOnly: true });
+    }
+  }
+  if (commit) setSettingsStatus('settings_news_saved', 'ok');
+}
+
+function updateMediaModeUrl(value, commit = false) {
+  const raw = String(value || '').trim();
+  const normalized = sanitizeMediaModeUrl(raw);
+  const input = $('settings-media-url');
+  const current = hubSettings.mediaMode && hubSettings.mediaMode.url ? hubSettings.mediaMode.url : '';
+
+  if (raw && !normalized) {
+    if (commit) {
+      if (input) input.value = current;
+      setSettingsStatus('settings_media_invalid', 'error');
+    }
+    return;
+  }
+
+  if (normalized === current) {
+    if (commit && input) input.value = current;
+    return;
+  }
+
+  hubSettings = normalizeSettings({
+    ...hubSettings,
+    mediaMode: { ...hubSettings.mediaMode, url: normalized },
+  });
+  saveHubSettings();
+  if (input && commit) input.value = hubSettings.mediaMode.url || '';
+  if (typeof refreshMediaModeFromSettings === 'function') refreshMediaModeFromSettings();
+  if (commit) setSettingsStatus('settings_media_saved', 'ok');
+}
+
+function updateQuickOutputSwitchDevice(slot, value, commit = false) {
+  if (!['a', 'b'].includes(slot)) return;
+  const key = slot === 'a' ? 'deviceAId' : 'deviceBId';
+  const current = normalizeQuickOutputSwitchSettings(hubSettings.quickOutputSwitch);
+  const normalized = sanitizeOutputDeviceId(value);
+
+  if (normalized === current[key]) {
+    if (commit) renderQuickOutputSwitchControls();
+    return;
+  }
+
+  const nextSwitch = { ...current, [key]: normalized };
+  if (nextSwitch.deviceAId && nextSwitch.deviceBId && nextSwitch.deviceAId === nextSwitch.deviceBId) {
+    if (slot === 'a') nextSwitch.deviceBId = '';
+    else nextSwitch.deviceAId = '';
+  }
+
+  hubSettings = normalizeSettings({
+    ...hubSettings,
+    quickOutputSwitch: nextSwitch,
+  });
+  saveHubSettings();
+  if (commit) renderQuickOutputSwitchControls();
+  if (typeof syncQuickShortcutButton === 'function') syncQuickShortcutButton();
+  if (commit) setSettingsStatus('settings_output_switch_saved', 'ok');
+}
+
+function updateQuickShortcutKeys(value, commit = false) {
+  const raw = String(value || '').trim();
+  const normalized = sanitizeQuickShortcutKeys(raw);
+  const input = $('settings-shortcut-keys');
+  const current = hubSettings.quickShortcut && hubSettings.quickShortcut.keys ? hubSettings.quickShortcut.keys : '';
+
+  if (raw && !normalized) {
+    if (commit) {
+      if (input) input.value = current;
+      setSettingsStatus('settings_shortcut_invalid', 'error');
+    }
+    return;
+  }
+
+  if (normalized === current) {
+    if (commit && input) input.value = current;
+    return;
+  }
+
+  hubSettings = normalizeSettings({
+    ...hubSettings,
+    quickShortcut: { ...hubSettings.quickShortcut, keys: normalized },
+  });
+  saveHubSettings();
+  if (input && commit) input.value = hubSettings.quickShortcut.keys || '';
+  if (typeof syncQuickShortcutButton === 'function') syncQuickShortcutButton();
+  if (commit) setSettingsStatus('settings_shortcut_saved', 'ok');
 }
 
 async function uploadSettingsBackground(input) {

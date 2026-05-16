@@ -5,7 +5,82 @@
 }
 
 /* ── Responsive dashboard ────────────────────────────────── */
+/* Full dashboard is a strict 4-column composition (no shared topbar strip):
+   - left: ticker + media
+   - center: all center widgets
+   - right-main: system
+   - right-rail: settings + volume */
+body:not([data-panel]) .shell {
+  padding-right: 1px;
+  grid-template-rows: var(--topbar-chip-height) minmax(0, 1fr);
+  align-items: stretch;
+}
+
+body:not([data-panel]) .dashboard {
+  display: contents;
+}
+
+body:not([data-panel]) .topbar {
+  display: contents;
+}
+
+body:not([data-panel]) .quickbar {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  width: 100%;
+}
+
+body:not([data-panel]) .media-panel {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+body:not([data-panel]) .center-column {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 0.72fr) minmax(0, 1.28fr);
+  grid-auto-rows: minmax(0, 1.28fr);
+  gap: 10px;
+}
+
+body:not([data-panel]) .center-column > .dashboard-widget {
+  min-height: 0;
+}
+
+body:not([data-panel]) .top-actions {
+  grid-column: 4;
+  grid-row: 1;
+  justify-self: stretch;
+  width: 100%;
+  justify-content: center;
+  margin-right: 0;
+}
+
+body:not([data-panel]) .side-panel {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  min-height: 0;
+  padding-right: 16px;
+}
+
+body:not([data-panel]) .global-volume-rail,
+body:not([data-panel]) #audio-block {
+  grid-column: 4;
+  grid-row: 2;
+  position: relative;
+  inset: auto;
+  justify-self: stretch;
+  align-self: stretch;
+  width: 100%;
+  z-index: 3;
+}
+
 @media (max-width: 1120px) {
+  :root { --volume-rail-width: 66px; }
   body { overflow: auto; }
   .shell { height: auto; min-height: 100vh; }
   .dashboard { grid-template-columns: 1fr 1fr; }
@@ -13,7 +88,8 @@
 }
 
 @media (max-width: 720px) {
-  .shell { padding: 12px; }
+  :root { --volume-rail-width: 58px; }
+  .shell { padding: 1px; }
   .topbar { grid-template-columns: 1fr; justify-items: start; }
   .clock { text-align: left; }
   .status-strip { justify-self: start; }
@@ -32,14 +108,20 @@
 }
 
 @media (max-height: 720px) and (min-width: 700px) {
-  .shell { padding: 12px 14px; gap: 10px; }
+  :root {
+    /* Widen media column (left) to approach 16:9 without changing panel height. */
+    --dashboard-columns: minmax(360px, 1.34fr) minmax(190px, 0.56fr) minmax(330px, 1fr) var(--volume-rail-width);
+  }
+  .shell { padding: 1px; gap: 10px; }
   .topbar { gap: 10px; min-height: 34px; }
-  .clock { gap: 3px; }
+  .clock { column-gap: 8px; }
   .clock-h,
   .clock-m { font-size: 38px; }
+  .clock-s { font-size: 26px; }
   .clock-sep { font-size: 31px; margin-bottom: 1px; }
-  .clock-meta { gap: 5px; }
-  .clock-date { font-size: 11px; }
+  .clock-sep-sec { font-size: 23px; margin-bottom: 1px; }
+  .clock-date { font-size: 34px; }
+  .clock-secondary { font-size: 18px; }
   .dashboard { gap: 10px; }
   .media-panel { padding: 14px; gap: 14px; }
   .mic-panel { padding: 12px 14px; row-gap: 8px; column-gap: 14px; }
@@ -49,8 +131,8 @@
   .system-tabs-left { padding: 3px; gap: 3px; }
   .sys-tab { font-size: 12px; padding: 6px 13px; }
   .sys-uptime { padding: 5px 9px; font-size: 11.5px; }
-  .system-grid,
-  .audio-block { gap: 7px 6px; }
+  .system-grid { gap: 7px 6px; }
+  .global-volume-wrap { gap: 8px; }
   .stat-box { min-height: 92px; padding: 9px 10px 8px; gap: 3px; }
   .stat-value,
   .bw-value { font-size: 18px; }
@@ -59,9 +141,16 @@
 }
 
 @media (max-height: 560px) and (min-width: 700px) {
-  .shell { padding: 10px 14px; gap: 10px; }
+  .shell { padding: 1px; gap: 10px; }
   .topbar { min-height: 30px; }
-  .clock-time { font-size: 24.5px; }
+  .clock { column-gap: 7px; }
+  .clock-h,
+  .clock-m { font-size: 33px; }
+  .clock-s { font-size: 22px; }
+  .clock-sep { font-size: 27px; margin-bottom: 1px; }
+  .clock-sep-sec { font-size: 20px; margin-bottom: 1px; }
+  .clock-date { font-size: 28px; }
+  .clock-secondary { font-size: 15px; }
   .dashboard {
     gap: 10px;
     grid-template-rows: minmax(0, 1fr) 148px;
@@ -88,16 +177,19 @@
   .device-row { min-height: 50px; padding: 9px 11px; }
 }
 
-/* ── Single-panel embed modes (?panel=mic|notes|media|system|audio) ── */
+/* ── Single-panel embed modes (?panel=mic|media|system|audio) ── */
 body[data-panel] { overflow: hidden; }
 body[data-panel] .shell {
   height: 100vh;
   min-height: 0;
-  padding: 8px;
+  padding: 1px;
   gap: 6px;
 }
 body[data-panel] .topbar {
+  display: grid;
   grid-template-columns: 1fr auto;
+  grid-column: 1 / -1;
+  grid-row: 1;
   min-height: 0;
   padding: 2px 8px;
   background: rgba(15,17,21,0.55);
@@ -105,10 +197,7 @@ body[data-panel] .topbar {
 body[data-panel] .topbar .brand,
 body[data-panel] .topbar .clock { display: none; }
 body[data-panel] .topbar .quickbar { display: flex; }
-body[data-panel] .topbar .qbtn-lock,
-
-body[data-panel] .topbar .qbtn-custom,
-body[data-panel] .topbar .qbtn-separator { display: none; }
+body[data-panel] .topbar .news-ticker { display: none; }
 body[data-panel] .topbar .top-actions { justify-self: end; }
 body[data-panel] .lang-toggle { padding: 2px; }
 body[data-panel] .lang-seg { padding: 4px 10px; font-size: 11px; }
@@ -116,6 +205,9 @@ body[data-panel] .dashboard {
   grid-template-columns: 1fr;
   grid-auto-rows: minmax(0, 1fr);
   gap: 0;
+}
+body[data-panel] .center-column {
+  display: contents;
 }
 body[data-panel] .dashboard-widget {
   grid-column: span 1 !important;
@@ -131,16 +223,16 @@ body[data-panel="media"] .calendar-title { font-size: 20px; }
 body[data-panel="media"] .upcoming-block { max-height: 56px; }
 
 body[data-panel="media"] .mic-panel,
-body[data-panel="media"] .notes-panel,
+body[data-panel="media"] .shortcut-panel,
 body[data-panel="media"] .side-panel { display: none; }
 
 body[data-panel="mic"] .media-panel,
-body[data-panel="mic"] .side-panel,
-body[data-panel="mic"] .notes-panel { display: none; }
+body[data-panel="mic"] .shortcut-panel,
+body[data-panel="mic"] .side-panel { display: none; }
 
 body[data-panel="mic"] .shell {
   grid-template-rows: minmax(0, 1fr);
-  padding: clamp(16px, 3vw, 36px);
+  padding: 1px;
   gap: 0;
 }
 
@@ -161,19 +253,19 @@ body[data-panel="mic"] .topbar {
 
 /* Mic panel layout managed by @container micpanel in MicPanel.css */
 
-body[data-panel="notes"] .media-panel,
-body[data-panel="notes"] .side-panel,
-body[data-panel="notes"] .mic-panel { display: none; }
-
 body[data-panel="system"] .media-panel,
-body[data-panel="system"] .mic-panel,
-body[data-panel="system"] .notes-panel { display: none; }
-body[data-panel="system"] #audio-block { display: none; }
+body[data-panel="system"] .shortcut-panel,
+body[data-panel="system"] .mic-panel { display: none; }
 
 body[data-panel="audio"] .media-panel,
-body[data-panel="audio"] .mic-panel,
-body[data-panel="audio"] .notes-panel { display: none; }
+body[data-panel="audio"] .shortcut-panel,
+body[data-panel="audio"] .mic-panel { display: none; }
 body[data-panel="audio"] #system-block { display: none; }
+body[data-panel="audio"] .side-panel { display: none; }
+body[data-panel="media"] #audio-block,
+body[data-panel="mic"] #audio-block,
+body[data-panel="tasks"] #audio-block,
+body[data-panel="system"] #audio-block { display: none !important; }
 
 /* ── Calendar / mini-player compact ─────────────────────── */
 @media (max-width: 640px), (max-height: 620px) {
@@ -202,7 +294,7 @@ body[data-panel="audio"] #system-block { display: none; }
 }
 
 @media (max-height: 460px) {
-  body[data-panel="media"] .shell { padding: 3px; gap: 3px; }
+  body[data-panel="media"] .shell { padding: 1px; gap: 3px; }
   body[data-panel="media"] .topbar { padding: 0 4px; }
   body[data-panel="media"] .lang-toggle { padding: 1px; }
   body[data-panel="media"] .lang-seg { padding: 3px 8px; font-size: 10px; }
@@ -242,8 +334,6 @@ body[data-panel="audio"] #system-block { display: none; }
 /* Hide day-modal / event-toast in panels that don't own the calendar */
 body[data-panel="mic"] #day-modal,
 body[data-panel="mic"] #event-toast,
-body[data-panel="notes"] #day-modal,
-body[data-panel="notes"] #event-toast,
 body[data-panel="system"] #day-modal,
 body[data-panel="system"] #event-toast,
 body[data-panel="audio"] #day-modal,

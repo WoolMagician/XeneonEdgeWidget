@@ -1,54 +1,76 @@
 /* ── Clock weather chip (inline in meta row) ─────────────── */
 .clock-weather {
-  height: 20px;
-  max-width: 145px;
-  border: 1px solid var(--floating-ui-border);
-  border-radius: 999px;
-  background:
-    radial-gradient(90% 120% at 0% 0%, rgba(var(--accent-rgb),0.18), transparent 56%),
-    var(--floating-ui-bg);
+  height: 100%;
+  width: 100%;
+  max-width: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text);
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 0 9px;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 10px;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.20), 0 0 18px rgba(var(--accent-rgb),0.10), inset 0 1px 0 rgba(255,255,255,0.07);
+  box-shadow: none;
   text-shadow: var(--readability-shadow);
-  backdrop-filter: blur(8px);
-  transition: transform 0.15s ease, border-color 0.15s ease;
+  backdrop-filter: none;
+  transition: background 0.15s ease, color 0.15s ease;
   flex-shrink: 0;
 }
 .clock-weather:hover {
-  transform: translateY(-1px);
-  border-color: rgba(var(--accent-rgb),0.48);
+  transform: none;
+  background: rgba(255,255,255,0.03);
 }
 .clock-weather.offline {
-  border-color: var(--floating-ui-border);
-  background: var(--floating-ui-bg);
+  border-color: transparent;
+  background: transparent;
   color: var(--muted-text);
 }
 .clock-weather svg {
-  width: 11px;
-  height: 11px;
+  width: 46px;
+  height: 46px;
   fill: var(--accent);
   filter: var(--icon-readability-filter);
   flex-shrink: 0;
 }
 .weather-temp {
-  font-size: 12px;
+  font-size: 34px;
   font-weight: 950;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
 }
 .weather-place {
+  flex: 1 1 auto;
   min-width: 0;
   color: #b6c1bd;
-  font-size: 10.5px;
+  font-size: 20px;
   font-weight: 850;
+  white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
+  text-align: center;
+}
+
+@media (max-width: 1280px) {
+  .clock-weather {
+    gap: 9px;
+    padding: 0 8px;
+  }
+  .clock-weather svg {
+    width: 32px;
+    height: 32px;
+  }
+  .weather-temp { font-size: 26px; }
+  .weather-place { font-size: 16px; }
 }
 
 /* ── Weather details modal ───────────────────────────────── */
@@ -663,7 +685,10 @@
 }
 
 @media (max-height: 620px) and (min-width: 900px) {
-  .clock-weather { height: 27px; max-width: 172px; }
+  .clock-weather { max-width: none; }
+  .clock-weather svg { width: 34px; height: 34px; }
+  .weather-temp { font-size: 28px; }
+  .weather-place { font-size: 17px; }
   .weather-panel { width: min(1240px, calc(100vw - 24px)); max-height: calc(100vh - 18px); border-radius: 18px; }
   .weather-panel-head { padding: 10px 14px 9px; }
   .weather-content { padding: 10px; gap: 9px; grid-template-columns: minmax(250px,0.74fr) minmax(420px,1.26fr); }

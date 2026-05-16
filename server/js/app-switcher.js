@@ -156,7 +156,8 @@ function toggleAppSwitcher(forceOpen) {
   const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : bd.hidden;
   bd.hidden = !shouldOpen;
   if (shouldOpen) {
-    closeTabSwitcher();
+    if (typeof closeMediaMode === 'function') closeMediaMode();
+    if (typeof closeTabSwitcher === 'function') closeTabSwitcher();
     loadAppWindows();
   }
 }
