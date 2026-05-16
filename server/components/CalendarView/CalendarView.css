@@ -246,6 +246,15 @@
   transform: translateX(-50%);
 }
 
+.day-cell.has-special-events::after {
+  background: #ffcf66;
+  box-shadow: 0 0 12px rgba(255, 187, 71, 0.6);
+}
+
+.day-cell.has-remote-events {
+  border-color: rgba(var(--accent-rgb),0.18);
+}
+
 .upcoming-block {
   min-height: 0;
   padding: 8px 9px;
@@ -291,6 +300,18 @@
   box-shadow: 0 0 8px rgba(var(--accent-rgb),0.5);
 }
 
+.upcoming-dot.special {
+  background: #ffcf66;
+  box-shadow: 0 0 10px rgba(255, 187, 71, 0.62);
+}
+
+.upcoming-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
 .upcoming-name {
   color: #eaf2ee;
   font-size: 12.5px;
@@ -300,12 +321,22 @@
   text-overflow: ellipsis;
 }
 
+.upcoming-meta {
+  color: #8fa09a;
+  font-size: 10.5px;
+  font-weight: 760;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .upcoming-when {
   color: var(--green);
-  font-size: 10.5px;
+  font-size: 10.25px;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  text-align: right;
 }
 
 .upcoming-list .event-empty {

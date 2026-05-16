@@ -4,8 +4,12 @@ const appMixerVolumeTimers = new Map();
 const appMixerVolumeQueuedLevels = new Map();
 const appMixerVolumeInFlight = new Set();
 const mixerIconCache = new Map();
+const mixerIconByPidCache = new Map();
+const mixerIconByTitleCache = new Map();
 let mixerIconFetchInFlight = null;
 let mixerIconLastFetchAt = 0;
+let mixerProcessIconFetchInFlight = null;
+let mixerProcessIconLastFetchAt = 0;
 let speakerVolumePendingLevel = null;
 let speakerVolumeFlushTimer = null;
 let speakerVolumeInFlight = false;
@@ -15,6 +19,19 @@ let speakerMuteLockUntil = 0;
 let micVolumePendingLevel = null;
 let micVolumeFlushTimer = null;
 let micVolumeInFlight = false;
+let audioActivityPollTimer = null;
+let audioActivityPollInFlight = false;
+let audioActivityAnimFrame = 0;
+let audioActivityAnimLastAt = 0;
+let lastAudioActivityAt = 0;
+let speakerVuLevel = 0;
+let speakerVuTarget = 0;
+const appVuTargets = new Map();
+const appVuTargetsByPid = new Map();
+const appVuSeenAtById = new Map();
+const appVuSeenAtByPid = new Map();
+const AUDIO_VU_STALE_MS = 420;
+const AUDIO_VU_TRIM_MS = 2200;
 
 const APP_MUTE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63Zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71ZM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3ZM12 4 9.91 6.09 12 8.18V4Z"/></svg>';
 const APP_UNMUTE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3Zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02ZM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77 0-4.28-2.99-7.86-7-8.77Z"/></svg>';
@@ -38,6 +55,141 @@ function refreshMicSlider(v) {
     micVolTrack.classList.toggle('muted', isMuted);
   }
   micVolSlider.style.background = 'transparent';
+}
+
+function smoothVuLevelFrame(previous, target, dtMs) {
+  const prev = Math.max(0, Math.min(100, Number(previous) || 0));
+  const next = Math.max(0, Math.min(100, Number(target) || 0));
+  if (next >= prev) return next;
+  const dt = Math.max(1, Math.min(120, Number(dtMs) || 16));
+  const fallTauMs = 24;
+  const tau = fallTauMs;
+  const alpha = 1 - Math.exp(-dt / tau);
+  const smoothed = prev + ((next - prev) * alpha);
+  if (Math.abs(smoothed - next) < 0.05) return next;
+  return Math.max(0, Math.min(100, smoothed));
+}
+
+function clampPercent(value) {
+  return Math.max(0, Math.min(100, Number(value) || 0));
+}
+
+function scaleVuByVolume(activityLevel, volumeLevel, muted = false) {
+  if (muted) return 0;
+  const activity = clampPercent(activityLevel);
+  const volume = clampPercent(volumeLevel);
+  return (activity * volume) / 100;
+}
+
+function renderGlobalVuLevel() {
+  const wrap = volSlider ? volSlider.closest('.global-vol-slider-wrap') : null;
+  if (!wrap) return;
+  wrap.style.setProperty('--vu-level', String(Math.max(0, Math.min(100, speakerVuLevel))));
+}
+
+function animateAudioActivityFrame(nowMs) {
+  audioActivityAnimFrame = requestAnimationFrame(animateAudioActivityFrame);
+  const now = Number(nowMs) || Date.now();
+  const last = audioActivityAnimLastAt || now;
+  const dtMs = Math.max(1, Math.min(80, now - last));
+  audioActivityAnimLastAt = now;
+  const stale = (now - lastAudioActivityAt) > 220;
+
+  const currentSpeakerVolume = clampPercent(volSlider ? Number(volSlider.value) : (audioData && audioData.speaker ? audioData.speaker.volume : 0));
+  const globalRawTarget = speakerMuted ? 0 : (stale ? 0 : speakerVuTarget);
+  const globalTarget = scaleVuByVolume(globalRawTarget, currentSpeakerVolume, speakerMuted);
+  speakerVuLevel = smoothVuLevelFrame(speakerVuLevel, globalTarget, dtMs);
+  renderGlobalVuLevel();
+
+  if (!appMixerList) return;
+  const items = appMixerList.querySelectorAll('.app-mixer-item[data-app-id]');
+  items.forEach(item => {
+    const id = String(item.dataset.appId || '');
+    const pid = Number(item.dataset.appPid || 0);
+    const wrap = item.querySelector('.app-mixer-slider-wrap');
+    if (!id || !wrap) return;
+    const isMuted = item.dataset.muted === 'true';
+    const appVolume = clampPercent(Number(item.dataset.volume || 0));
+    let byId = 0;
+    const idSeenAt = Number(appVuSeenAtById.get(id) || 0);
+    if (idSeenAt > 0) {
+      const idAge = now - idSeenAt;
+      if (idAge <= AUDIO_VU_STALE_MS) byId = Number(appVuTargets.get(id) || 0);
+      if (idAge > AUDIO_VU_TRIM_MS) {
+        appVuTargets.delete(id);
+        appVuSeenAtById.delete(id);
+      }
+    }
+    let byPid = 0;
+    if (Number.isFinite(pid) && pid > 0) {
+      const pidSeenAt = Number(appVuSeenAtByPid.get(pid) || 0);
+      if (pidSeenAt > 0) {
+        const pidAge = now - pidSeenAt;
+        if (pidAge <= AUDIO_VU_STALE_MS) byPid = Number(appVuTargetsByPid.get(pid) || 0);
+        if (pidAge > AUDIO_VU_TRIM_MS) {
+          appVuTargetsByPid.delete(pid);
+          appVuSeenAtByPid.delete(pid);
+        }
+      }
+    }
+    const rawTarget = isMuted ? 0 : (stale ? 0 : Math.max(byId, byPid));
+    const target = scaleVuByVolume(rawTarget, appVolume, isMuted);
+    const current = Number(item.dataset.vuLevel || 0);
+    const smoothed = smoothVuLevelFrame(current, target, dtMs);
+    item.dataset.vuLevel = String(smoothed);
+    wrap.style.setProperty('--vu-level', String(Math.max(0, Math.min(100, smoothed))));
+  });
+}
+
+function applyAudioActivity(payload) {
+  speakerVuTarget = Math.max(0, Math.min(100, Number(payload && payload.speaker) || 0));
+  const now = Date.now();
+  const apps = payload && Array.isArray(payload.apps) ? payload.apps : [];
+  apps.forEach(item => {
+    const id = String(item && item.id || '').trim();
+    const pid = Number(item && item.processId);
+    const validPid = Number.isFinite(pid) && pid > 0 ? pid : 0;
+    if (!id && validPid <= 0) return;
+    const activity = Math.max(0, Math.min(100, Number(item && item.activity) || 0));
+    if (id) {
+      appVuTargets.set(id, activity);
+      appVuSeenAtById.set(id, now);
+    }
+    if (validPid > 0) {
+      appVuTargetsByPid.set(validPid, activity);
+      appVuSeenAtByPid.set(validPid, now);
+    }
+  });
+  lastAudioActivityAt = now;
+}
+
+async function fetchAudioActivity() {
+  if (audioActivityPollInFlight) return;
+  audioActivityPollInFlight = true;
+  try {
+    const res = await fetch(SERVER + '/audio/activity', { cache: 'no-store' });
+    if (!res.ok) throw new Error('Audio activity failed');
+    const data = await res.json();
+    applyAudioActivity(data);
+  } catch {
+    // Keep the last targets and let the frame decay handle brief transport hiccups.
+  } finally {
+    audioActivityPollInFlight = false;
+  }
+}
+
+function ensureAudioActivityPolling() {
+  if (!audioActivityAnimFrame) {
+    audioActivityAnimFrame = requestAnimationFrame(animateAudioActivityFrame);
+  }
+  if (audioActivityPollTimer) return;
+  lastAudioActivityAt = Date.now();
+  fetchAudioActivity();
+  // Fallback polling only when push updates are stale.
+  audioActivityPollTimer = setInterval(() => {
+    if ((Date.now() - lastAudioActivityAt) <= 220) return;
+    fetchAudioActivity();
+  }, 60);
 }
 
 function onSliderInput(v) {
@@ -117,6 +269,11 @@ function applySpeakerMute(m) {
   if (volMuteBtn) volMuteBtn.classList.toggle('speaker-muted', speakerMuted);
   const wrap = volSlider ? volSlider.closest('.global-vol-slider-wrap') : null;
   if (wrap) wrap.classList.toggle('speaker-muted', speakerMuted);
+  if (speakerMuted && wrap) {
+    speakerVuLevel = 0;
+    speakerVuTarget = 0;
+    wrap.style.setProperty('--vu-level', '0');
+  }
   if (spkIconOn) spkIconOn.style.display = speakerMuted ? 'none' : '';
   if (spkIconOff) spkIconOff.style.display = speakerMuted ? '' : 'none';
 }
@@ -125,32 +282,38 @@ function normalizeAudioApps(data) {
   if (!Array.isArray(data)) return [];
   return data
     .filter(item => item && item.id)
+    .filter(item => !/qtwebengineprocess(?:\.exe)?/i.test(String(item.id || item.label || item.name || '')))
     .map(item => ({
       id: String(item.id),
       name: String(item.name || item.label || item.title || 'App').trim() || 'App',
       label: String(item.label || '').trim(),
       title: String(item.title || '').trim(),
+      processId: Number.isFinite(Number(item.processId)) ? Number(item.processId) : 0,
       volume: Math.max(0, Math.min(100, Number(item.volume) || 0)),
       muted: !!item.muted,
+      activity: Math.max(0, Math.min(100, Number(item.activity) || 0)),
     }));
 }
 
 function canonicalMixerToken(value) {
   const raw = String(value || '').trim().toLowerCase().replace(/\.exe$/i, '');
   if (!raw) return '';
+  if (raw.includes('system sounds') || raw.includes('audiosrv.dll')) return 'systemsounds';
   let token = raw.replace(/[^a-z0-9]+/g, '');
+  if (token.includes('audiosrvdll')) return 'systemsounds';
   if (token === 'googlechrome') token = 'chrome';
   if (token === 'microsoftedgewebview2') token = 'msedge';
+  if (token === 'msedgewebview2') token = 'msedge';
   if (token === 'whatsapproot') token = 'whatsapp';
   return token;
 }
 
 function mixerAppToken(app) {
-  return canonicalMixerToken(app.label) || canonicalMixerToken(app.name);
+  return canonicalMixerToken(app.label) || canonicalMixerToken(app.name) || canonicalMixerToken(app.id);
 }
 
 function isSystemSoundsToken(token) {
-  return token === 'systemsounds';
+  return token === 'systemsounds' || token === 'audiosrvdll';
 }
 
 function resolveMixerPresentation(app) {
@@ -195,20 +358,48 @@ function mixerIconToken(name) {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
+function normalizeTitleToken(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+}
+
 function captureMixerIconsFromWindows(data) {
   const windows = data && Array.isArray(data.windows) ? data.windows : [];
   windows.forEach(win => {
     const token = canonicalMixerToken(win && win.app);
     const icon = win && typeof win.icon === 'string' ? win.icon : '';
-    if (!token || !icon) return;
-    if (!mixerIconCache.has(token)) mixerIconCache.set(token, icon);
+    if (!icon) return;
+    if (token && !mixerIconCache.has(token)) mixerIconCache.set(token, icon);
+    const pid = Number(win && win.processId);
+    if (Number.isFinite(pid) && pid > 0) {
+      mixerIconByPidCache.set(pid, icon);
+    }
+    const titleToken = normalizeTitleToken(win && win.title);
+    if (titleToken && !mixerIconByTitleCache.has(titleToken)) {
+      mixerIconByTitleCache.set(titleToken, icon);
+    }
+  });
+}
+
+function captureMixerIconsFromProcessList(data) {
+  const icons = data && Array.isArray(data.icons) ? data.icons : [];
+  icons.forEach(item => {
+    const pid = Number(item && item.processId);
+    const icon = item && typeof item.icon === 'string' ? item.icon : '';
+    if (!icon) return;
+    if (Number.isFinite(pid) && pid > 0 && !mixerIconByPidCache.has(pid)) {
+      mixerIconByPidCache.set(pid, icon);
+    }
   });
 }
 
 function ensureMixerIcons(force = false) {
   const age = Date.now() - mixerIconLastFetchAt;
   if (!force && (mixerIconFetchInFlight || age < 20000)) return;
-  mixerIconFetchInFlight = fetch('/windows')
+  mixerIconFetchInFlight = fetch(SERVER + '/windows', { cache: 'no-store' })
     .then(res => (res.ok ? res.json() : null))
     .then(data => {
       if (data) captureMixerIconsFromWindows(data);
@@ -217,6 +408,30 @@ function ensureMixerIcons(force = false) {
     .finally(() => {
       mixerIconLastFetchAt = Date.now();
       mixerIconFetchInFlight = null;
+      if (audioData && audioData.apps) renderAppMixer(audioData.apps);
+    });
+}
+
+function ensureMixerProcessIcons(processIds, force = false) {
+  const ids = Array.isArray(processIds)
+    ? processIds.map(value => Number(value)).filter(value => Number.isFinite(value) && value > 0)
+    : [];
+  const unresolved = ids.filter(pid => !mixerIconByPidCache.has(pid));
+  if (!unresolved.length) return;
+
+  const age = Date.now() - mixerProcessIconLastFetchAt;
+  if (!force && (mixerProcessIconFetchInFlight || age < 7000)) return;
+
+  const query = encodeURIComponent(unresolved.slice(0, 64).join(','));
+  mixerProcessIconFetchInFlight = fetch(`${SERVER}/windows?icons=1&pids=${query}`, { cache: 'no-store' })
+    .then(res => (res.ok ? res.json() : null))
+    .then(data => {
+      if (data) captureMixerIconsFromProcessList(data);
+    })
+    .catch(() => {})
+    .finally(() => {
+      mixerProcessIconLastFetchAt = Date.now();
+      mixerProcessIconFetchInFlight = null;
       if (audioData && audioData.apps) renderAppMixer(audioData.apps);
     });
 }
@@ -283,6 +498,8 @@ async function flushAppVolumeQueue(key) {
 
 function renderAppMixer(rawApps) {
   if (!appMixerList || !appMixerShell) return;
+  let missingIcon = false;
+  const unresolvedIconPids = [];
   const apps = normalizeAudioApps(rawApps)
     .map(app => ({ app, presentation: resolveMixerPresentation(app) }))
     .sort(mixerSortComparator)
@@ -298,6 +515,9 @@ function renderAppMixer(rawApps) {
     const item = document.createElement('div');
     item.className = 'app-mixer-item';
     item.dataset.muted = app.muted ? 'true' : 'false';
+    item.dataset.appId = app.id;
+    item.dataset.appPid = app.processId > 0 ? String(app.processId) : '';
+    item.dataset.volume = String(clampPercent(app.volume));
     item.title = app.title || app.name;
 
     const muteBtn = document.createElement('button');
@@ -315,6 +535,12 @@ function renderAppMixer(rawApps) {
 
     const sliderWrap = document.createElement('div');
     sliderWrap.className = 'app-mixer-slider-wrap';
+    const vuById = Number(appVuTargets.get(app.id) || 0);
+    const vuByPid = app.processId > 0 ? Number(appVuTargetsByPid.get(app.processId) || 0) : 0;
+    const initialRawVu = Math.max(vuById, vuByPid, Math.max(0, Math.min(100, Number(app.activity) || 0)));
+    const initialVu = scaleVuByVolume(initialRawVu, app.volume, app.muted);
+    item.dataset.vuLevel = String(initialVu);
+    sliderWrap.style.setProperty('--vu-level', String(initialVu));
 
     const slider = document.createElement('input');
     slider.type = 'range';
@@ -337,6 +563,7 @@ function renderAppMixer(rawApps) {
       const level = Math.max(0, Math.min(100, Number(slider.value) || 0));
       value.textContent = `${Math.round(level)}%`;
       applyMixerFill(level);
+      item.dataset.volume = String(level);
       queueAppVolumeUpdate(app.id, level);
     });
 
@@ -351,7 +578,10 @@ function renderAppMixer(rawApps) {
       fragment.appendChild(item);
       return;
     }
-    const iconSrc = presentation.iconToken ? mixerIconCache.get(presentation.iconToken) : '';
+    const iconByPid = app.processId > 0 ? (mixerIconByPidCache.get(app.processId) || '') : '';
+    const iconByToken = presentation.iconToken ? (mixerIconCache.get(presentation.iconToken) || '') : '';
+    const iconByTitle = normalizeTitleToken(app.title) ? (mixerIconByTitleCache.get(normalizeTitleToken(app.title)) || '') : '';
+    const iconSrc = iconByTitle || iconByPid || iconByToken;
     if (iconSrc) {
       const image = document.createElement('img');
       image.src = iconSrc;
@@ -361,6 +591,8 @@ function renderAppMixer(rawApps) {
     } else if (isSystemSoundsToken(presentation.baseToken)) {
       icon.innerHTML = SYSTEM_SOUNDS_ICON;
     } else {
+      missingIcon = true;
+      if (app.processId > 0) unresolvedIconPids.push(app.processId);
       icon.textContent = mixerIconToken(presentation.displayName);
     }
 
@@ -388,6 +620,7 @@ function renderAppMixer(rawApps) {
     const sliderWrap = document.createElement('div');
     sliderWrap.className = 'app-mixer-slider-wrap';
     sliderWrap.style.setProperty('--slider-level', '0');
+    sliderWrap.style.setProperty('--vu-level', '0');
     const slider = document.createElement('input');
     slider.type = 'range';
     slider.className = 'app-mixer-slider';
@@ -407,10 +640,13 @@ function renderAppMixer(rawApps) {
   }
 
   appMixerList.replaceChildren(fragment);
-  ensureMixerIcons();
+  ensureMixerIcons(missingIcon);
+  ensureMixerProcessIcons(unresolvedIconPids, missingIcon);
+  ensureAudioActivityPolling();
 }
 
 function applyAudio(data) {
+  ensureAudioActivityPolling();
   const normalizedData = typeof reconcileQuickOutputAudioSnapshot === 'function'
     ? reconcileQuickOutputAudioSnapshot(data || null)
     : (data || null);

@@ -109,10 +109,97 @@ function showCalendar(show, automatic) {
   }
 }
 
+const CAL_SYNC_UI_MIN_REFRESH_MINUTES = 1;
+const CAL_SYNC_UI_MAX_REFRESH_MINUTES = 360;
+const CAL_SYNC_UI_DEFAULT_REFRESH_MINUTES = 10;
+let calendarLocalEvents = [];
+let calendarRemoteEvents = [];
+let calendarSyncMeta = null;
+let calendarRefreshTimer = null;
+let configuredCalendarRefreshMs = CAL_SYNC_UI_DEFAULT_REFRESH_MINUTES * 60 * 1000;
+
+function getConfiguredCalendarRefreshMinutes() {
+  const source = hubSettings && hubSettings.calendarSync && Number(hubSettings.calendarSync.refreshMinutes);
+  if (!Number.isFinite(source)) return CAL_SYNC_UI_DEFAULT_REFRESH_MINUTES;
+  return Math.max(CAL_SYNC_UI_MIN_REFRESH_MINUTES, Math.min(CAL_SYNC_UI_MAX_REFRESH_MINUTES, Math.round(source)));
+}
+
+function scheduleCalendarSyncRefresh() {
+  const nextMs = getConfiguredCalendarRefreshMinutes() * 60 * 1000;
+  configuredCalendarRefreshMs = nextMs;
+  if (calendarRefreshTimer) clearInterval(calendarRefreshTimer);
+  calendarRefreshTimer = setInterval(() => loadCalendarEvents(true), configuredCalendarRefreshMs);
+}
+
+function refreshCalendarEventsFromSettings(options = {}) {
+  scheduleCalendarSyncRefresh();
+  if (options && options.forceRefresh) loadCalendarEvents(true);
+}
+
+function normalizeCalendarEventItem(event, sourceHint = 'local') {
+  const source = event && typeof event === 'object' ? event : {};
+  const startsAt = String(source.startsAt || '').trim();
+  const endsAt = String(source.endsAt || '').trim();
+  return {
+    ...source,
+    id: String(source.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`).slice(0, 120),
+    title: String(source.title || '').trim().slice(0, 160),
+    notes: String(source.notes || '').trim().slice(0, 600),
+    startsAt,
+    endsAt,
+    location: String(source.location || '').trim().slice(0, 160),
+    categories: Array.isArray(source.categories) ? source.categories.map(item => String(item || '').trim().slice(0, 80)).filter(Boolean).slice(0, 12) : [],
+    source: source.source || sourceHint,
+    sourceLabel: String(source.sourceLabel || '').trim(),
+    isAllDay: !!source.isAllDay,
+    endExclusive: !!source.endExclusive,
+    readOnly: source.readOnly === undefined ? sourceHint === 'ical' : !!source.readOnly,
+    special: !!source.special,
+  };
+}
+
+function rebuildCalendarEvents() {
+  const merged = [...calendarLocalEvents, ...calendarRemoteEvents];
+  calendarEvents = merged.sort((a, b) => {
+    const left = Date.parse(a && a.startsAt);
+    const right = Date.parse(b && b.startsAt);
+    if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
+    if (Number.isFinite(left) && !Number.isFinite(right)) return -1;
+    if (!Number.isFinite(left) && Number.isFinite(right)) return 1;
+    return String(a && a.title || '').localeCompare(String(b && b.title || ''), t('locale'), { sensitivity: 'base' });
+  });
+}
+
+function getEventStartMs(event) {
+  return Date.parse(event && event.startsAt);
+}
+
+function getEventEndMs(event) {
+  const startMs = getEventStartMs(event);
+  if (!Number.isFinite(startMs)) return NaN;
+  const parsedEnd = Date.parse(event && event.endsAt);
+  if (Number.isFinite(parsedEnd) && parsedEnd > startMs) return parsedEnd;
+  return startMs + (event && event.isAllDay ? 24 * 60 * 60 * 1000 : 60 * 1000);
+}
+
+function eventIntersectsDateValue(event, dateValue) {
+  const startMs = getEventStartMs(event);
+  const endMs = getEventEndMs(event);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return false;
+  const dayStart = new Date(`${dateValue}T00:00:00`).getTime();
+  const dayEnd = dayStart + (24 * 60 * 60 * 1000);
+  return endMs > dayStart && startMs < dayEnd;
+}
+
 function eventsForDate(dateValue) {
   return calendarEvents
-    .filter(event => String(event.startsAt || '').slice(0, 10) === dateValue)
-    .sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt));
+    .filter(event => eventIntersectsDateValue(event, dateValue))
+    .sort((a, b) => {
+      const left = getEventStartMs(a);
+      const right = getEventStartMs(b);
+      if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
+      return String(a.title || '').localeCompare(String(b.title || ''), t('locale'), { sensitivity: 'base' });
+    });
 }
 
 function renderCalendar() {
@@ -150,9 +237,12 @@ function renderCalendar() {
     const cell = document.createElement('button');
     cell.type = 'button';
     cell.className = 'day-cell';
+    const dayEvents = eventsForDate(dateValue);
     if (dateValue === todayValue) cell.classList.add('today');
     if (dateValue === selectedCalendarDate) cell.classList.add('selected');
-    if (eventsForDate(dateValue).length) cell.classList.add('has-events');
+    if (dayEvents.length) cell.classList.add('has-events');
+    if (dayEvents.some(event => event.special)) cell.classList.add('has-special-events');
+    if (dayEvents.some(event => event.source === 'ical')) cell.classList.add('has-remote-events');
     cell.textContent = day;
     cell.onclick = () => openDayModal(dateValue);
     days.appendChild(cell);
@@ -161,13 +251,54 @@ function renderCalendar() {
   renderUpcoming();
 }
 
+function getCalendarEventSourceLabel(event) {
+  const source = String(event && event.source || '').toLowerCase();
+  if (source === 'ical') return event && event.sourceLabel ? event.sourceLabel : t('calendar_source_ical');
+  return t('calendar_source_local');
+}
+
+function formatCalendarEventTimeLabel(event) {
+  if (!event) return '--';
+  const startMs = getEventStartMs(event);
+  const endMs = getEventEndMs(event);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return '--';
+  if (event.isAllDay) return t('calendar_all_day');
+  const start = new Date(startMs);
+  const end = new Date(endMs);
+  const timeFmt = new Intl.DateTimeFormat(t('locale'), { hour: '2-digit', minute: '2-digit' });
+  const sameDay = toDateInputValue(start) === toDateInputValue(end);
+  if (sameDay) return `${timeFmt.format(start)} - ${timeFmt.format(end)}`;
+  const shortFmt = new Intl.DateTimeFormat(t('locale'), { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return `${shortFmt.format(start)} - ${shortFmt.format(end)}`;
+}
+
+function formatCalendarEventUpcomingWhen(event) {
+  if (!event) return '--';
+  const startMs = getEventStartMs(event);
+  if (!Number.isFinite(startMs)) return '--';
+  if (event.isAllDay) {
+    const fmt = new Intl.DateTimeFormat(t('locale'), { day: '2-digit', month: 'short' });
+    return `${fmt.format(new Date(startMs))} · ${t('calendar_all_day')}`;
+  }
+  const fmt = new Intl.DateTimeFormat(t('locale'), { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  return fmt.format(new Date(startMs));
+}
+
 function renderUpcoming() {
   const list = $('upcoming-list');
   if (!list) return;
   const now = Date.now();
   const upcoming = calendarEvents
-    .filter(e => Date.parse(e.startsAt) >= now - 60000)
-    .sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt))
+    .filter(event => {
+      const endMs = getEventEndMs(event);
+      return Number.isFinite(endMs) && endMs >= now - 60000;
+    })
+    .sort((a, b) => {
+      const left = getEventStartMs(a);
+      const right = getEventStartMs(b);
+      if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
+      return String(a.title || '').localeCompare(String(b.title || ''), t('locale'), { sensitivity: 'base' });
+    })
     .slice(0, 5);
   list.innerHTML = '';
   if (!upcoming.length) {
@@ -177,7 +308,6 @@ function renderUpcoming() {
     list.appendChild(empty);
     return;
   }
-  const fmt = new Intl.DateTimeFormat(t('locale'), { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
   upcoming.forEach(e => {
     const item = document.createElement('div');
     item.className = 'upcoming-item';
@@ -185,14 +315,24 @@ function renderUpcoming() {
     item.onclick = () => openDayModal(String(e.startsAt).slice(0, 10));
     const dot = document.createElement('span');
     dot.className = 'upcoming-dot';
+    if (e.special) dot.classList.add('special');
+    const main = document.createElement('div');
+    main.className = 'upcoming-main';
     const name = document.createElement('span');
     name.className = 'upcoming-name';
     name.textContent = e.title || t('ph_title');
+    const meta = document.createElement('span');
+    meta.className = 'upcoming-meta';
+    const metaParts = [formatCalendarEventUpcomingWhen(e), getCalendarEventSourceLabel(e)];
+    if (e.location) metaParts.splice(1, 0, e.location);
+    meta.textContent = metaParts.filter(Boolean).join(' · ');
+    main.appendChild(name);
+    main.appendChild(meta);
     const when = document.createElement('span');
     when.className = 'upcoming-when';
-    when.textContent = fmt.format(new Date(e.startsAt));
+    when.textContent = formatCalendarEventTimeLabel(e);
     item.appendChild(dot);
-    item.appendChild(name);
+    item.appendChild(main);
     item.appendChild(when);
     list.appendChild(item);
   });
@@ -237,7 +377,6 @@ function renderDayModalEvents() {
     list.appendChild(empty);
     return;
   }
-  const fmt = new Intl.DateTimeFormat(t('locale'), { hour: '2-digit', minute: '2-digit' });
   events.forEach(event => {
     const item = document.createElement('div');
     item.className = 'event-item';
@@ -248,21 +387,41 @@ function renderDayModalEvents() {
     name.textContent = event.title || t('ph_title');
     const time = document.createElement('div');
     time.className = 'event-time';
-    time.textContent = fmt.format(new Date(event.startsAt));
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'event-delete';
-    del.title = t('delete_event');
-    del.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-    del.onclick = () => deleteCalendarEvent(event.id);
+    time.textContent = formatCalendarEventTimeLabel(event);
     top.appendChild(name);
     top.appendChild(time);
-    top.appendChild(del);
+    const canDelete = !event.readOnly && event.source !== 'ical';
+    if (canDelete) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'event-delete';
+      del.title = t('delete_event');
+      del.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+      del.onclick = () => deleteCalendarEvent(event.id);
+      top.appendChild(del);
+    }
     item.appendChild(top);
-    if (event.notes) {
+    const badges = document.createElement('div');
+    badges.className = 'event-badges';
+    const sourceBadge = document.createElement('span');
+    sourceBadge.className = `event-badge ${event.source === 'ical' ? 'ical' : 'local'}`;
+    sourceBadge.textContent = getCalendarEventSourceLabel(event);
+    badges.appendChild(sourceBadge);
+    if (event.special) {
+      const special = document.createElement('span');
+      special.className = 'event-badge special';
+      special.textContent = t('calendar_special_day');
+      badges.appendChild(special);
+    }
+    item.appendChild(badges);
+
+    const details = [];
+    if (event.location) details.push(event.location);
+    if (event.notes) details.push(event.notes);
+    if (details.length) {
       const meta = document.createElement('div');
       meta.className = 'event-meta';
-      meta.textContent = event.notes;
+      meta.textContent = details.join(' · ');
       item.appendChild(meta);
     }
     list.appendChild(item);
@@ -286,20 +445,48 @@ function jumpCalendarToday() {
   renderCalendar();
 }
 
-async function loadCalendarEvents() {
+async function loadCalendarEvents(forceRefresh = false) {
+  scheduleCalendarSyncRefresh();
   try {
-    const res = await fetch(SERVER + '/events');
-    if (!res.ok) throw new Error('events unavailable');
-    const data = await res.json();
-    calendarEvents = Array.isArray(data.events) ? data.events : [];
+    const query = forceRefresh ? '?refresh=1' : '';
+    const res = await fetch(`${SERVER}/calendar/events${query}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error('calendar events unavailable');
+    const data = await res.json().catch(() => ({}));
+    const localList = Array.isArray(data.localEvents)
+      ? data.localEvents
+      : (Array.isArray(data.events) ? data.events.filter(event => String(event && event.source || '').toLowerCase() !== 'ical') : []);
+    const remoteList = Array.isArray(data.remoteEvents)
+      ? data.remoteEvents
+      : (Array.isArray(data.events) ? data.events.filter(event => String(event && event.source || '').toLowerCase() === 'ical') : []);
+    calendarLocalEvents = localList.map(event => normalizeCalendarEventItem(event, 'local'));
+    calendarRemoteEvents = remoteList.map(event => normalizeCalendarEventItem(event, 'ical'));
+    calendarSyncMeta = data && data.sync && typeof data.sync === 'object' ? data.sync : null;
+    rebuildCalendarEvents();
     calendarLoaded = true;
     if (calendarMode) renderCalendar();
     renderUpcoming();
   } catch {
-    calendarLoaded = true;
-    calendarEvents = [];
-    if (calendarMode) renderCalendar();
-    renderUpcoming();
+    try {
+      const fallbackRes = await fetch(`${SERVER}/events`, { cache: 'no-store' });
+      if (!fallbackRes.ok) throw new Error('events unavailable');
+      const fallbackData = await fallbackRes.json().catch(() => ({}));
+      const localList = Array.isArray(fallbackData.events) ? fallbackData.events : [];
+      calendarLocalEvents = localList.map(event => normalizeCalendarEventItem(event, 'local'));
+      calendarRemoteEvents = [];
+      calendarSyncMeta = null;
+      rebuildCalendarEvents();
+      calendarLoaded = true;
+      if (calendarMode) renderCalendar();
+      renderUpcoming();
+    } catch {
+      calendarLoaded = true;
+      calendarLocalEvents = [];
+      calendarRemoteEvents = [];
+      calendarSyncMeta = null;
+      calendarEvents = [];
+      if (calendarMode) renderCalendar();
+      renderUpcoming();
+    }
   }
 }
 
@@ -307,7 +494,7 @@ async function persistCalendarEvents() {
   await fetch(SERVER + '/events', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ events: calendarEvents }),
+    body: JSON.stringify({ events: calendarLocalEvents }),
   });
 }
 
@@ -318,7 +505,7 @@ async function saveCalendarEvent() {
   if (!title || !starts) return;
   const reminderMinutes = Number($('event-reminder').value);
   const reminderAt = reminderMinutes >= 0 ? toLocalDateTimeValue(new Date(starts.getTime() - reminderMinutes * 60000)) : '';
-  calendarEvents.push({
+  calendarLocalEvents.push(normalizeCalendarEventItem({
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     title,
     notes: $('event-notes').value.trim(),
@@ -326,7 +513,11 @@ async function saveCalendarEvent() {
     reminderAt,
     notifiedAt: '',
     createdAt: toLocalDateTimeValue(new Date()),
-  });
+    source: 'local',
+    sourceLabel: t('calendar_source_local'),
+    readOnly: false,
+  }, 'local'));
+  rebuildCalendarEvents();
   $('event-title').value = '';
   $('event-notes').value = '';
   selectedCalendarDate = dateValue;
@@ -341,7 +532,10 @@ async function saveCalendarEvent() {
 }
 
 async function deleteCalendarEvent(id) {
-  calendarEvents = calendarEvents.filter(event => event.id !== id);
+  const targetId = String(id || '');
+  if (!targetId) return;
+  calendarLocalEvents = calendarLocalEvents.filter(event => String(event && event.id || '') !== targetId);
+  rebuildCalendarEvents();
   await persistCalendarEvents().catch(() => {});
   if (calendarMode) renderCalendar();
   if ($('day-modal').classList.contains('open')) renderDayModalEvents();
@@ -369,10 +563,10 @@ function showReminder(event) {
 }
 
 async function checkReminders() {
-  if (!calendarLoaded || !calendarEvents.length) return;
+  if (!calendarLoaded || !calendarLocalEvents.length) return;
   const now = Date.now();
   let changed = false;
-  calendarEvents.forEach(event => {
+  calendarLocalEvents.forEach(event => {
     if (!event.reminderAt || event.notifiedAt) return;
     const reminderTime = Date.parse(event.reminderAt);
     if (Number.isFinite(reminderTime) && reminderTime <= now) {
@@ -381,5 +575,8 @@ async function checkReminders() {
       showReminder(event);
     }
   });
-  if (changed) await persistCalendarEvents().catch(() => {});
+  if (changed) {
+    rebuildCalendarEvents();
+    await persistCalendarEvents().catch(() => {});
+  }
 }

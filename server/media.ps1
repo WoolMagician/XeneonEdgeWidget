@@ -26,14 +26,16 @@ try {
     $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
   } | Select-Object -First 1)
 
-  function Await($Operation, [Type]$ResultType) {
+  function Await($Operation, [Type]$ResultType, [int]$TimeoutMs = 1500, [string]$Stage = 'async') {
     $task = $script:AsTask.MakeGenericMethod($ResultType).Invoke($null, @($Operation))
-    $task.Wait()
+    if (-not $task.Wait([Math]::Max(200, $TimeoutMs))) {
+      throw "Async timeout at ${Stage} (${TimeoutMs}ms)"
+    }
     $task.Result
   }
 
   $managerType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
-  $manager = Await ($managerType::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
+  $manager = Await ($managerType::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]) 3000 'manager.request'
   $currentSession = $manager.GetCurrentSession()
   $sessions = @($manager.GetSessions())
 
@@ -52,7 +54,7 @@ try {
 
   function Get-SessionInfo($Session, $IsCurrent) {
     $mediaPropsType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties, Windows.Media.Control, ContentType = WindowsRuntime]
-    $props = Await ($Session.TryGetMediaPropertiesAsync()) $mediaPropsType
+    $props = Await ($Session.TryGetMediaPropertiesAsync()) $mediaPropsType 1400 'session.mediaProps'
     $playback = $Session.GetPlaybackInfo()
     $timeline = $Session.GetTimelineProperties()
     $source = [string]$Session.SourceAppUserModelId
@@ -107,6 +109,9 @@ try {
       $candidates += Get-SessionInfo $candidate ($candidate -eq $currentSession)
     } catch { }
   }
+  if ($candidates.Count -eq 0 -and $null -ne $currentSession) {
+    try { $candidates += Get-SessionInfo $currentSession $true } catch { }
+  }
 
   $selected = $candidates | Sort-Object score -Descending | Select-Object -First 1
   $session = if ($selected) { $selected.session } else { $currentSession }
@@ -120,9 +125,9 @@ try {
     $seekPosition = 0
     $seekDuration = 0
     switch ($Action) {
-      'playpause' { $ok = Await ($session.TryTogglePlayPauseAsync()) ([bool]) }
-      'next'      { $ok = Await ($session.TrySkipNextAsync())       ([bool]) }
-      'previous'  { $ok = Await ($session.TrySkipPreviousAsync())   ([bool]) }
+      'playpause' { $ok = Await ($session.TryTogglePlayPauseAsync()) ([bool]) 1500 'action.playpause' }
+      'next'      { $ok = Await ($session.TrySkipNextAsync())       ([bool]) 1500 'action.next' }
+      'previous'  { $ok = Await ($session.TrySkipPreviousAsync())   ([bool]) 1500 'action.previous' }
       'seek' {
         $timeline = $session.GetTimelineProperties()
         try {
@@ -133,7 +138,7 @@ try {
         $seekPosition = [Math]::Max(0, [int]$PositionSeconds)
         if ($seekDuration -gt 0) { $seekPosition = [Math]::Min($seekPosition, $seekDuration) }
         $ticks = [int64]$seekPosition * 10000000L
-        $ok = Await ($session.TryChangePlaybackPositionAsync($ticks)) ([bool])
+        $ok = Await ($session.TryChangePlaybackPositionAsync($ticks)) ([bool]) 1600 'action.seek'
       }
     }
     if ($Action -eq 'seek') {
@@ -146,11 +151,11 @@ try {
   try {
     if ($null -ne $selected.thumbnailRef) {
       $streamType = [Windows.Storage.Streams.IRandomAccessStreamWithContentType, Windows.Storage.Streams, ContentType = WindowsRuntime]
-      $stream = Await ($selected.thumbnailRef.OpenReadAsync()) $streamType
+      $stream = Await ($selected.thumbnailRef.OpenReadAsync()) $streamType 800 'thumb.open'
       if ($stream.Size -gt 0 -and $stream.Size -lt 5242880) {
         $input = $stream.GetInputStreamAt(0)
         $reader = [Windows.Storage.Streams.DataReader, Windows.Storage.Streams, ContentType = WindowsRuntime]::new($input)
-        [void](Await ($reader.LoadAsync([uint32]$stream.Size)) ([uint32]))
+        [void](Await ($reader.LoadAsync([uint32]$stream.Size)) ([uint32]) 900 'thumb.read')
         $bytes = New-Object byte[] ([int]$stream.Size)
         $reader.ReadBytes($bytes)
         $contentType = if ($stream.ContentType) { [string]$stream.ContentType } else { 'image/jpeg' }

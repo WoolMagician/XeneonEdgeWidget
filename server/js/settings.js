@@ -10,6 +10,9 @@ const SETTINGS_NEWS_MIN_RESULTS = 1;
 const SETTINGS_NEWS_MAX_RESULTS = 50;
 const SETTINGS_NEWS_DEFAULT_RESULTS = 10;
 const SETTINGS_NEWS_DEFAULT_FEED_URL = 'https://news.google.com/rss/search?q=notizie%20mondo&hl=it-IT&gl=IT&ceid=IT:it&num=10';
+const SETTINGS_CALENDAR_SYNC_MIN_REFRESH_MINUTES = 1;
+const SETTINGS_CALENDAR_SYNC_MAX_REFRESH_MINUTES = 360;
+const SETTINGS_CALENDAR_SYNC_DEFAULT_REFRESH_MINUTES = 10;
 const SETTINGS_BACKGROUND_TYPES = Object.freeze(new Set([
   'image/png', 'image/jpeg', 'image/webp', 'image/gif', 'video/mp4', 'video/webm',
 ]));
@@ -72,6 +75,10 @@ const DEFAULT_HUB_SETTINGS = Object.freeze({
     feedUrl: SETTINGS_NEWS_DEFAULT_FEED_URL,
     refreshMinutes: SETTINGS_NEWS_DEFAULT_REFRESH_MINUTES,
     maxResults: SETTINGS_NEWS_DEFAULT_RESULTS,
+  }),
+  calendarSync: Object.freeze({
+    feedUrl: '',
+    refreshMinutes: SETTINGS_CALENDAR_SYNC_DEFAULT_REFRESH_MINUTES,
   }),
   mediaMode: Object.freeze({ url: '' }),
   quickOutputSwitch: Object.freeze({ deviceAId: '', deviceBId: '' }),
@@ -178,6 +185,28 @@ function normalizeNewsSettings(value) {
     ? Math.max(SETTINGS_NEWS_MIN_RESULTS, Math.min(SETTINGS_NEWS_MAX_RESULTS, Math.round(maxResultsRaw)))
     : SETTINGS_NEWS_DEFAULT_RESULTS;
   return { feedUrl, refreshMinutes, maxResults };
+}
+
+function sanitizeCalendarSyncFeedUrl(value) {
+  const raw = String(value || '').trim().slice(0, 2048);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/.test(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeCalendarSyncSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const feedUrl = sanitizeCalendarSyncFeedUrl(source.feedUrl);
+  const refreshRaw = Number(source.refreshMinutes);
+  const refreshMinutes = Number.isFinite(refreshRaw)
+    ? Math.max(SETTINGS_CALENDAR_SYNC_MIN_REFRESH_MINUTES, Math.min(SETTINGS_CALENDAR_SYNC_MAX_REFRESH_MINUTES, Math.round(refreshRaw)))
+    : SETTINGS_CALENDAR_SYNC_DEFAULT_REFRESH_MINUTES;
+  return { feedUrl, refreshMinutes };
 }
 
 function sanitizeMediaModeUrl(value) {
@@ -342,6 +371,7 @@ function normalizeSettings(source) {
     lockWidgets: normalizeLockWidgets(value.lockWidgets),
     weather: normalizeWeatherSettings(value.weather),
     news: normalizeNewsSettings(value.news),
+    calendarSync: normalizeCalendarSyncSettings(value.calendarSync),
     mediaMode: normalizeMediaModeSettings(value.mediaMode),
     quickOutputSwitch: normalizeQuickOutputSwitchSettings(value.quickOutputSwitch),
     quickShortcut: normalizeQuickShortcutSettings(value.quickShortcut),
@@ -408,6 +438,7 @@ async function hydrateHubSettingsFromServer() {
     hubSettings = normalizeSettings(data.settings);
     saveHubSettings({ server: false });
     applyHubSettings();
+    if (typeof refreshCalendarEventsFromSettings === 'function') refreshCalendarEventsFromSettings({ forceRefresh: true });
     if (typeof applyDashboardLayout === 'function') applyDashboardLayout();
     if ($('settings-overlay') && !$('settings-overlay').hidden) renderSettingsModal();
   } catch {}
@@ -727,6 +758,10 @@ function syncSettingsControls() {
   if (newsRefresh) newsRefresh.value = String((hubSettings.news && hubSettings.news.refreshMinutes) || SETTINGS_NEWS_DEFAULT_REFRESH_MINUTES);
   const newsMaxResults = $('settings-news-max-results');
   if (newsMaxResults) newsMaxResults.value = String((hubSettings.news && hubSettings.news.maxResults) || SETTINGS_NEWS_DEFAULT_RESULTS);
+  const calendarFeedUrl = $('settings-calendar-feed-url');
+  if (calendarFeedUrl) calendarFeedUrl.value = (hubSettings.calendarSync && hubSettings.calendarSync.feedUrl) || '';
+  const calendarRefresh = $('settings-calendar-refresh-minutes');
+  if (calendarRefresh) calendarRefresh.value = String((hubSettings.calendarSync && hubSettings.calendarSync.refreshMinutes) || SETTINGS_CALENDAR_SYNC_DEFAULT_REFRESH_MINUTES);
   const mediaUrl = $('settings-media-url');
   if (mediaUrl) mediaUrl.value = hubSettings.mediaMode.url || '';
   renderQuickOutputSwitchControls();
@@ -1003,6 +1038,94 @@ function updateNewsMaxResults(value, commit = false) {
   if (commit) setSettingsStatus('settings_news_saved', 'ok');
 }
 
+function updateCalendarSyncFeedUrl(value, commit = false) {
+  const raw = String(value || '').trim();
+  const normalized = sanitizeCalendarSyncFeedUrl(raw);
+  const input = $('settings-calendar-feed-url');
+  const current = hubSettings.calendarSync && hubSettings.calendarSync.feedUrl ? hubSettings.calendarSync.feedUrl : '';
+
+  if (raw && !normalized) {
+    if (commit) {
+      if (input) input.value = current;
+      setSettingsStatus('settings_calendar_invalid_url', 'error');
+    }
+    return;
+  }
+
+  if (normalized === current) {
+    if (commit && input) input.value = current;
+    return;
+  }
+
+  hubSettings = normalizeSettings({
+    ...hubSettings,
+    calendarSync: { ...hubSettings.calendarSync, feedUrl: normalized },
+  });
+  saveHubSettings();
+  if (input && commit) input.value = hubSettings.calendarSync.feedUrl || '';
+  if (typeof refreshCalendarEventsFromSettings === 'function') {
+    if (commit) {
+      postHubSettingsToServer()
+        .catch(() => {})
+        .finally(() => refreshCalendarEventsFromSettings({ forceRefresh: true }));
+    } else {
+      refreshCalendarEventsFromSettings();
+    }
+  }
+  if (commit) setSettingsStatus('settings_calendar_saved', 'ok');
+}
+
+function updateCalendarSyncRefreshMinutes(value, commit = false) {
+  const raw = String(value ?? '').trim();
+  const input = $('settings-calendar-refresh-minutes');
+  const current = hubSettings.calendarSync && Number.isFinite(Number(hubSettings.calendarSync.refreshMinutes))
+    ? Number(hubSettings.calendarSync.refreshMinutes)
+    : SETTINGS_CALENDAR_SYNC_DEFAULT_REFRESH_MINUTES;
+
+  if (!raw) {
+    if (commit) {
+      if (input) input.value = String(current);
+      setSettingsStatus('settings_calendar_invalid_refresh', 'error');
+    }
+    return;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    if (commit) {
+      if (input) input.value = String(current);
+      setSettingsStatus('settings_calendar_invalid_refresh', 'error');
+    }
+    return;
+  }
+
+  const normalized = Math.max(
+    SETTINGS_CALENDAR_SYNC_MIN_REFRESH_MINUTES,
+    Math.min(SETTINGS_CALENDAR_SYNC_MAX_REFRESH_MINUTES, Math.round(parsed)),
+  );
+  if (normalized === current) {
+    if (commit && input) input.value = String(current);
+    return;
+  }
+
+  hubSettings = normalizeSettings({
+    ...hubSettings,
+    calendarSync: { ...hubSettings.calendarSync, refreshMinutes: normalized },
+  });
+  saveHubSettings();
+  if (input && commit) input.value = String(hubSettings.calendarSync.refreshMinutes || SETTINGS_CALENDAR_SYNC_DEFAULT_REFRESH_MINUTES);
+  if (typeof refreshCalendarEventsFromSettings === 'function') {
+    if (commit) {
+      postHubSettingsToServer()
+        .catch(() => {})
+        .finally(() => refreshCalendarEventsFromSettings({ forceRefresh: true }));
+    } else {
+      refreshCalendarEventsFromSettings();
+    }
+  }
+  if (commit) setSettingsStatus('settings_calendar_saved', 'ok');
+}
+
 function updateMediaModeUrl(value, commit = false) {
   const raw = String(value || '').trim();
   const normalized = sanitizeMediaModeUrl(raw);
@@ -1140,6 +1263,7 @@ function resetHubAppearance() {
   hubSettings = normalizeSettings({ ...DEFAULT_HUB_SETTINGS, dashboardLayout: hubSettings.dashboardLayout });
   saveHubSettings();
   applyHubSettings();
+  if (typeof refreshCalendarEventsFromSettings === 'function') refreshCalendarEventsFromSettings({ forceRefresh: true });
   if (typeof applyDashboardLayout === 'function') applyDashboardLayout();
   renderSettingsModal();
   setSettingsStatus('settings_reset_done', 'ok');
@@ -1148,6 +1272,7 @@ function resetHubAppearance() {
 function reloadHubSettingsFromStorage() {
   hubSettings = loadHubSettings();
   applyHubSettings();
+  if (typeof refreshCalendarEventsFromSettings === 'function') refreshCalendarEventsFromSettings();
   if (typeof applyDashboardLayout === 'function') applyDashboardLayout();
   if ($('settings-overlay') && !$('settings-overlay').hidden) renderSettingsModal();
 }

@@ -1,7 +1,8 @@
 param(
-  [ValidateSet('list', 'focus')]
+  [ValidateSet('list', 'focus', 'icons')]
   [string]$Action = 'list',
-  [string]$Hwnd = ''
+  [string]$Hwnd = '',
+  [string]$Pids = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,6 +50,11 @@ public static class XenonWindows {
   [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
   [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll", CharSet = CharSet.Auto)] private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll", EntryPoint = "GetClassLongPtr", SetLastError = true)] private static extern IntPtr GetClassLongPtr64(IntPtr hWnd, int nIndex);
+  [DllImport("user32.dll", EntryPoint = "GetClassLong", SetLastError = true)] private static extern uint GetClassLong32(IntPtr hWnd, int nIndex);
+  [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr CopyIcon(IntPtr hIcon);
+  [DllImport("user32.dll", SetLastError = true)] private static extern bool DestroyIcon(IntPtr hIcon);
   [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
@@ -68,6 +74,12 @@ public static class XenonWindows {
   private const int SW_RESTORE = 9;
   private const byte VK_MENU = 0x12;
   private const int KEYEVENTF_KEYUP = 0x0002;
+  private const uint WM_GETICON = 0x007F;
+  private const int ICON_SMALL = 0;
+  private const int ICON_BIG = 1;
+  private const int ICON_SMALL2 = 2;
+  private const int GCL_HICON = -14;
+  private const int GCL_HICONSM = -34;
 
   public static List<WindowInfo> ListWindows() {
     var result = new List<WindowInfo>();
@@ -269,6 +281,67 @@ public static class XenonWindows {
     } catch { return null; }
   }
 
+  public static string IconForWindowOrPath(long hwndValue, string path, int size) {
+    try {
+      var hWnd = new IntPtr(hwndValue);
+      var iconFromWindow = IconForWindowHandle(hWnd, size);
+      if (!String.IsNullOrWhiteSpace(iconFromWindow)) return iconFromWindow;
+    } catch { }
+    return IconForPath(path, size);
+  }
+
+  public static string ProcessPath(int processId) {
+    try {
+      using (var process = Process.GetProcessById(processId)) {
+        try { return process.MainModule.FileName ?? string.Empty; } catch { return string.Empty; }
+      }
+    } catch {
+      return string.Empty;
+    }
+  }
+
+  private static string IconForWindowHandle(IntPtr hWnd, int size) {
+    if (hWnd == IntPtr.Zero) return null;
+    IntPtr hIcon = SendMessage(hWnd, WM_GETICON, new IntPtr(ICON_SMALL2), IntPtr.Zero);
+    if (hIcon == IntPtr.Zero) hIcon = SendMessage(hWnd, WM_GETICON, new IntPtr(ICON_SMALL), IntPtr.Zero);
+    if (hIcon == IntPtr.Zero) hIcon = SendMessage(hWnd, WM_GETICON, new IntPtr(ICON_BIG), IntPtr.Zero);
+    if (hIcon == IntPtr.Zero) hIcon = GetClassLongPtrSafe(hWnd, GCL_HICONSM);
+    if (hIcon == IntPtr.Zero) hIcon = GetClassLongPtrSafe(hWnd, GCL_HICON);
+    if (hIcon == IntPtr.Zero) return null;
+    return IconFromHandle(hIcon, size);
+  }
+
+  private static IntPtr GetClassLongPtrSafe(IntPtr hWnd, int index) {
+    if (IntPtr.Size == 8) return GetClassLongPtr64(hWnd, index);
+    return new IntPtr(unchecked((int)GetClassLong32(hWnd, index)));
+  }
+
+  private static string IconFromHandle(IntPtr hIcon, int size) {
+    if (hIcon == IntPtr.Zero) return null;
+    IntPtr copiedIcon = IntPtr.Zero;
+    try {
+      copiedIcon = CopyIcon(hIcon);
+      if (copiedIcon == IntPtr.Zero) return null;
+      using (var icon = Icon.FromHandle(copiedIcon))
+      using (var bmp = icon.ToBitmap())
+      using (var resized = new Bitmap(size, size)) {
+        using (var g = Graphics.FromImage(resized)) {
+          g.Clear(Color.Transparent);
+          g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+          g.DrawImage(bmp, 0, 0, size, size);
+        }
+        using (var ms = new MemoryStream()) {
+          resized.Save(ms, ImageFormat.Png);
+          return "data:image/png;base64," + Convert.ToBase64String(ms.ToArray());
+        }
+      }
+    } catch {
+      return null;
+    } finally {
+      if (copiedIcon != IntPtr.Zero) DestroyIcon(copiedIcon);
+    }
+  }
+
   private static Bitmap FitBitmap(Bitmap source, int maxWidth, int maxHeight) {
     var target = new Bitmap(maxWidth, maxHeight, PixelFormat.Format32bppArgb);
     using (var g = Graphics.FromImage(target)) {
@@ -300,6 +373,64 @@ if ($Action -eq 'focus') {
   exit 0
 }
 
+$rawPidTokens = @()
+if (-not [string]::IsNullOrWhiteSpace($Pids)) {
+  $rawPidTokens = $Pids -split ','
+}
+
+if ($Action -eq 'icons') {
+  $items = @()
+  $pidList = $rawPidTokens |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -match '^\d+$' } |
+    ForEach-Object { [int]$_ } |
+    Where-Object { $_ -gt 0 } |
+    Sort-Object -Unique |
+    Select-Object -First 64
+
+  $windowInfoByPid = @{}
+  try {
+    $allWindows = [XenonWindows]::ListWindows()
+    foreach ($window in $allWindows) {
+      $pid = [int]$window.ProcessId
+      if ($pid -le 0) { continue }
+      $title = [string]$window.Title
+      $score = 0
+      if ([bool]$window.Active) { $score += 1000 }
+      if (-not [bool]$window.Minimized) { $score += 200 }
+      if (-not [string]::IsNullOrWhiteSpace($title)) { $score += [Math]::Min(200, $title.Length) }
+      if (-not $windowInfoByPid.ContainsKey($pid) -or $score -gt [int]$windowInfoByPid[$pid].Score) {
+        $windowInfoByPid[$pid] = [pscustomobject]@{
+          Hwnd = [int64]$window.Hwnd
+          Score = [int]$score
+        }
+      }
+    }
+  } catch { }
+
+  foreach ($procId in $pidList) {
+    $path = ''
+    try { $path = [XenonWindows]::ProcessPath([int]$procId) } catch { }
+    $hwnd = [int64]0
+    if ($windowInfoByPid.ContainsKey([int]$procId)) {
+      $hwnd = [int64]$windowInfoByPid[[int]$procId].Hwnd
+    }
+    $icon = $null
+    try { $icon = [XenonWindows]::IconForWindowOrPath($hwnd, $path, 48) } catch { }
+    if ([string]::IsNullOrWhiteSpace($icon) -and -not [string]::IsNullOrWhiteSpace($path)) {
+      try { $icon = [XenonWindows]::IconForPath($path, 48) } catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($icon)) { continue }
+    $items += [pscustomobject]@{
+      processId = [int]$procId
+      icon = $icon
+    }
+  }
+
+  @{ icons = $items } | ConvertTo-Json -Depth 4 -Compress
+  exit 0
+}
+
 $items = @()
 $windows = [XenonWindows]::ListWindows() |
   Sort-Object @{ Expression = 'Active'; Descending = $true }, @{ Expression = 'ProcessName'; Ascending = $true }, @{ Expression = 'Title'; Ascending = $true } |
@@ -309,7 +440,7 @@ foreach ($window in $windows) {
   $preview = $null
   try { $preview = [XenonWindows]::Capture($window.Hwnd, 240, 135) } catch { }
   $icon = $null
-  try { $icon = [XenonWindows]::IconForPath($window.Path, 48) } catch { }
+  try { $icon = [XenonWindows]::IconForWindowOrPath($window.Hwnd, $window.Path, 48) } catch { }
 
   $items += [pscustomobject]@{
     id = [string]$window.Hwnd

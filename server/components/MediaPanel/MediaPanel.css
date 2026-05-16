@@ -65,7 +65,7 @@
   position: relative;
   aspect-ratio: 16 / 9;
   width: 100%;
-  max-width: min(100%, 460px);
+  max-width: min(100%, 520px);
   border-radius: var(--radius);
   background: #101516;
   border: 1px solid rgba(255,255,255,0.08);
@@ -151,13 +151,17 @@
 .media-art.has-image .media-placeholder { display: none; }
 
 .media-content {
-  width: min(100%, 560px);
+  width: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
   gap: 12px;
+}
+
+.media-content > div:first-child {
+  width: 100%;
 }
 
 .app-pill {
@@ -224,6 +228,7 @@
 }
 
 .media-title {
+  width: 100%;
   min-width: 0;
   font-size: 30px;
   line-height: 1.2;
@@ -239,13 +244,17 @@
 }
 
 .media-artist {
+  width: 100%;
   max-width: min(100%, 520px);
+  margin-left: auto;
+  margin-right: auto;
   margin-top: 4px;
   font-size: 16px;
   line-height: 1.25;
   color: #c1ccc7;
   font-weight: 700;
   text-shadow: 0 1px 8px rgba(0,0,0,0.5);
+  text-align: center;
   white-space: normal;
   overflow: hidden;
   display: -webkit-box;
@@ -255,7 +264,7 @@
 }
 
 .media-progress {
-  width: min(100%, 560px);
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -266,9 +275,10 @@
   align-items: center;
   justify-content: space-between;
   color: #d4ddd9;
-  font-size: 12px;
+  font-size: 22px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
 
 .media-progress-slider {

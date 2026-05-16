@@ -568,6 +568,23 @@
         </div>
       </div>
 
+      <div class="settings-group settings-calendar-group">
+        <div class="settings-group-head">
+          <span data-i18n="settings_calendar_sync">Calendario Google (iCal)</span>
+          <span class="settings-hint" data-i18n="settings_calendar_sync_hint">Feed iCal e frequenza</span>
+        </div>
+        <div class="settings-grid">
+          <label class="settings-row full">
+            <span class="settings-label-line"><span data-i18n="settings_calendar_feed_url">URL iCal</span><span class="settings-hint" data-i18n="settings_calendar_feed_url_hint">HTTP/HTTPS .ics</span></span>
+            <input class="settings-text-input" id="settings-calendar-feed-url" type="url" maxlength="2048" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings_calendar_feed_url_placeholder" placeholder="https://calendar.google.com/calendar/ical/..." oninput="updateCalendarSyncFeedUrl(this.value, false)" onchange="updateCalendarSyncFeedUrl(this.value, true)">
+          </label>
+          <label class="settings-row full">
+            <span class="settings-label-line"><span data-i18n="settings_calendar_refresh_minutes">Aggiornamento (minuti)</span><span class="settings-hint" data-i18n="settings_calendar_refresh_minutes_hint">1-360</span></span>
+            <input class="settings-text-input" id="settings-calendar-refresh-minutes" type="number" min="1" max="360" step="1" inputmode="numeric" oninput="updateCalendarSyncRefreshMinutes(this.value, false)" onchange="updateCalendarSyncRefreshMinutes(this.value, true)">
+          </label>
+        </div>
+      </div>
+
       <div class="settings-group settings-colors-group">
         <div class="settings-group-head" data-i18n="settings_colors">Colori</div>
         <div class="settings-grid">

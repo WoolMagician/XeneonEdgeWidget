@@ -18,6 +18,7 @@ function preferredMediaView() {
 }
 
 const MEDIA_PROGRESS_MAX = 1000;
+const MEDIA_ACTION_STATUS_OVERRIDE_MS = 2200;
 let mediaSeekDragging = false;
 let mediaSeekInFlight = false;
 let mediaSeekQueuedSeconds = null;
@@ -29,10 +30,64 @@ let mediaTimelineAnchorAt = 0;
 let mediaTimelineDuration = 0;
 let mediaTimelineStatus = 'Paused';
 let mediaTimelineTrackKey = '';
+let mediaInactiveSince = 0;
+let mediaPlaybackStatusOverride = '';
+let mediaPlaybackStatusOverrideUntil = 0;
+
+function clearMediaPlaybackStatusOverride() {
+  mediaPlaybackStatusOverride = '';
+  mediaPlaybackStatusOverrideUntil = 0;
+}
+
+function setMediaPlaybackStatusOverride(status, ttlMs = MEDIA_ACTION_STATUS_OVERRIDE_MS) {
+  const normalized = String(status || '').trim();
+  if (!normalized) return;
+  mediaPlaybackStatusOverride = normalized;
+  mediaPlaybackStatusOverrideUntil = Date.now() + Math.max(300, Number(ttlMs) || MEDIA_ACTION_STATUS_OVERRIDE_MS);
+}
+
+function getDisplayPlaybackStatus(rawStatus, active = true) {
+  const now = Date.now();
+  const normalizedRaw = String(rawStatus || 'Paused').trim() || 'Paused';
+  if (!active) {
+    clearMediaPlaybackStatusOverride();
+    return normalizedRaw;
+  }
+
+  if (mediaPlaybackStatusOverride && now <= mediaPlaybackStatusOverrideUntil) {
+    if (normalizedRaw !== mediaPlaybackStatusOverride) {
+      return mediaPlaybackStatusOverride;
+    }
+    clearMediaPlaybackStatusOverride();
+    return normalizedRaw;
+  }
+
+  if (mediaPlaybackStatusOverrideUntil > 0 && now > mediaPlaybackStatusOverrideUntil) {
+    clearMediaPlaybackStatusOverride();
+  }
+
+  return normalizedRaw;
+}
+
+function renderMediaPlaybackIcons(status) {
+  const playing = String(status || '') === 'Playing';
+
+  const playIcon = $('play-icon');
+  const pauseIcon = $('pause-icon');
+  if (playIcon) playIcon.style.display = playing ? 'none' : '';
+  if (pauseIcon) pauseIcon.style.display = playing ? '' : 'none';
+
+  const miniPlayIcon = $('mini-play-icon');
+  const miniPauseIcon = $('mini-pause-icon');
+  if (miniPlayIcon) miniPlayIcon.style.display = playing ? 'none' : '';
+  if (miniPauseIcon) miniPauseIcon.style.display = playing ? '' : 'none';
+
+  syncLockMediaPlaybackIcon(playing);
+}
 
 function clampMediaSeconds(seconds, duration) {
-  const safeDuration = Math.max(0, Math.floor(Number(duration) || 0));
-  const safeSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  const safeDuration = Math.max(0, Number(duration) || 0);
+  const safeSeconds = Math.max(0, Number(seconds) || 0);
   if (safeDuration <= 0) return safeSeconds;
   return Math.min(safeDuration, safeSeconds);
 }
@@ -46,12 +101,14 @@ function mediaTrackKey(data) {
   return `${app}|${source}|${title}|${artist}`;
 }
 
-function setMediaTimeline(positionSeconds, durationSeconds, status, trackKey = null) {
-  const duration = Math.max(0, Math.floor(Number(durationSeconds) || 0));
+function setMediaTimeline(positionSeconds, durationSeconds, status, trackKey = null, anchorAtMs = Date.now()) {
+  const duration = Math.max(0, Number(durationSeconds) || 0);
   mediaTimelineDuration = duration;
   mediaTimelineStatus = String(status || 'Paused');
   mediaTimelineAnchorSeconds = clampMediaSeconds(positionSeconds, duration);
-  mediaTimelineAnchorAt = Date.now();
+  const anchor = Number(anchorAtMs);
+  mediaTimelineAnchorAt = Number.isFinite(anchor) ? anchor : Date.now();
+  if (mediaTimelineAnchorAt > (Date.now() + 5000)) mediaTimelineAnchorAt = Date.now();
   if (typeof trackKey === 'string') mediaTimelineTrackKey = trackKey;
 }
 
@@ -59,7 +116,7 @@ function getMediaTimelinePosition() {
   const duration = Math.max(0, mediaTimelineDuration);
   const base = clampMediaSeconds(mediaTimelineAnchorSeconds, duration);
   if (mediaTimelineStatus !== 'Playing') return base;
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - mediaTimelineAnchorAt) / 1000));
+  const elapsedSeconds = Math.max(0, (Date.now() - mediaTimelineAnchorAt) / 1000);
   return clampMediaSeconds(base + elapsedSeconds, duration);
 }
 
@@ -88,7 +145,7 @@ function syncMediaProgress(positionSeconds, durationSeconds, force = false) {
   const total = $('media-progress-total');
   if (!block || !slider || !elapsed || !total) return;
 
-  const duration = Math.max(0, Math.floor(Number(durationSeconds) || 0));
+  const duration = Math.max(0, Number(durationSeconds) || 0);
   const hasTimeline = duration > 0;
   block.hidden = !hasTimeline;
 
@@ -131,7 +188,7 @@ function ensureMediaProgressTicker() {
   mediaProgressTicker = setInterval(() => {
     if (!mediaData || !mediaData.active) return;
     if (mediaSeekDragging || mediaSeekInFlight) return;
-    const duration = Math.max(0, Math.floor(mediaTimelineDuration || Number(mediaData.duration) || 0));
+    const duration = Math.max(0, Number(mediaTimelineDuration || Number(mediaData.duration) || 0));
     if (duration <= 0) return;
 
     if (mediaSeekOverrideUntil > Date.now()) {
@@ -139,7 +196,7 @@ function ensureMediaProgressTicker() {
       return;
     }
     syncMediaProgress(getMediaTimelinePosition(), duration);
-  }, 1000);
+  }, 240);
 }
 
 async function sendMediaSeek(targetSeconds) {
@@ -167,7 +224,7 @@ async function flushMediaSeekQueue() {
   mediaSeekInFlight = false;
 
   if (result && result.ok) {
-    const duration = Math.max(0, Math.floor(Number(mediaData && mediaData.duration) || Number(result.duration) || 0));
+    const duration = Math.max(0, Number(mediaData && mediaData.duration) || Number(result.duration) || 0);
     mediaSeekOverrideSeconds = clampMediaSeconds(Number(result.position), duration || Number(result.position));
     mediaSeekOverrideUntil = Date.now() + 4000;
     if (mediaData) {
@@ -199,7 +256,7 @@ function queueMediaSeek(targetSeconds) {
 function onMediaSeekInput(rawValue) {
   const slider = $('media-progress-slider');
   if (!slider || !mediaData) return;
-  const duration = Math.max(0, Math.floor(Number(mediaData.duration) || 0));
+  const duration = Math.max(0, Number(mediaData.duration) || 0);
   if (duration <= 0) return;
   mediaSeekDragging = true;
   const ratio = Math.max(0, Math.min(1, (Number(rawValue) || 0) / MEDIA_PROGRESS_MAX));
@@ -221,7 +278,7 @@ function onMediaSeekCommit(rawValue) {
     mediaSeekDragging = false;
     return;
   }
-  const duration = Math.max(0, Math.floor(Number(mediaData.duration) || 0));
+  const duration = Math.max(0, Number(mediaData.duration) || 0);
   if (duration <= 0) {
     mediaSeekDragging = false;
     return;
@@ -253,60 +310,50 @@ function finishMediaSeekDrag() {
 
 function applyMedia(data) {
   ensureMediaProgressTicker();
+  const now = Date.now();
   const previousMedia = mediaData;
   const nextTrackKey = mediaTrackKey(data);
   const previousTrackKey = mediaTrackKey(previousMedia);
   const sameItem = !!(nextTrackKey && previousTrackKey && nextTrackKey === previousTrackKey);
-  const duration = Math.max(0, Math.floor(Number(data && data.duration) || Number(previousMedia && previousMedia.duration) || 0));
+  const duration = Math.max(0, Number(data && data.duration) || Number(previousMedia && previousMedia.duration) || 0);
   let incomingPosition = clampMediaSeconds(Number(data && data.position), duration || Number(data && data.position));
-  const playbackStatus = String(data && data.playbackStatus || 'Paused');
+  const rawPlaybackStatus = String(data && data.playbackStatus || 'Paused');
+  let playbackStatus = getDisplayPlaybackStatus(rawPlaybackStatus, !!(data && data.active));
+  const remoteTimelineAt = Number(data && data.timelineAtMs);
+  const hasRemoteTimelineAt = Number.isFinite(remoteTimelineAt) && remoteTimelineAt > 0;
+  let resolvedTimelineAt = hasRemoteTimelineAt ? remoteTimelineAt : now;
   const localPosition = getMediaTimelinePosition();
-  const statusChanged = playbackStatus !== mediaTimelineStatus;
-  const hasSeekOverride = mediaSeekOverrideUntil > Date.now();
+  const hasSeekOverride = mediaSeekOverrideUntil > now;
   let resolvedPosition = incomingPosition;
-  let shouldResetTimeline = true;
 
   if (data && previousMedia && data.active && previousMedia.active && sameItem) {
     const delta = incomingPosition - localPosition;
     if (hasSeekOverride) {
       resolvedPosition = clampMediaSeconds(mediaSeekOverrideSeconds, duration || mediaTimelineDuration || incomingPosition);
-      shouldResetTimeline = true;
-    } else if (statusChanged) {
-      // External play/pause changes often arrive with stale position.
-      if (delta < -4 && delta > -40) resolvedPosition = localPosition;
-      shouldResetTimeline = true;
-    } else if (playbackStatus === 'Playing') {
-      // While playing, keep local clock unless backend clearly moved.
-      if (delta >= 2 || delta <= -25) {
-        resolvedPosition = incomingPosition;
-        shouldResetTimeline = true;
-      } else {
-        resolvedPosition = localPosition;
-        shouldResetTimeline = false;
-      }
+      resolvedTimelineAt = now;
+    } else if (delta < -1.2 && delta > -40) {
+      // Protect against stale snapshots reported behind the local projected timeline.
+      resolvedPosition = localPosition;
+      resolvedTimelineAt = now;
+    } else if (Math.abs(delta) <= 1.2 && playbackStatus === mediaTimelineStatus) {
+      // Keep the local projection stable when drift is within jitter tolerance.
+      resolvedPosition = localPosition;
+      resolvedTimelineAt = now;
+    } else if (!hasRemoteTimelineAt) {
+      resolvedTimelineAt = now;
+      resolvedPosition = incomingPosition;
     } else {
-      // While paused/stopped, follow backend on near/large changes; otherwise keep stable.
-      if (Math.abs(delta) <= 8 || Math.abs(delta) >= 25) {
-        resolvedPosition = incomingPosition;
-        shouldResetTimeline = true;
-      } else {
-        resolvedPosition = localPosition;
-        shouldResetTimeline = false;
-      }
+      resolvedPosition = incomingPosition;
     }
   }
 
   if (data) {
     data.position = resolvedPosition;
     data.duration = duration;
+    data.timelineAtMs = resolvedTimelineAt;
+    data.playbackStatus = playbackStatus;
   }
-  if (shouldResetTimeline || !sameItem || !data || !data.active) {
-    setMediaTimeline(resolvedPosition, duration, playbackStatus, nextTrackKey);
-  } else {
-    mediaTimelineDuration = duration;
-    mediaTimelineStatus = playbackStatus;
-    mediaTimelineTrackKey = nextTrackKey;
-  }
+  setMediaTimeline(resolvedPosition, duration, playbackStatus, nextTrackKey, resolvedTimelineAt);
   mediaData = data;
   if (typeof syncMediaModeFromPlayback === 'function') syncMediaModeFromPlayback(data);
   const panel = $('media-panel');
@@ -316,12 +363,20 @@ function applyMedia(data) {
 
   const active = data && data.active && (data.title || data.artist || data.app);
   if (!active) {
+    const hadActive = !!(previousMedia && previousMedia.active && (previousMedia.title || previousMedia.artist || previousMedia.app));
+    if (hadActive) {
+      if (!mediaInactiveSince) mediaInactiveSince = now;
+      if ((now - mediaInactiveSince) < 2500) return;
+    } else {
+      mediaInactiveSince = 0;
+    }
     refreshMediaEmpty();
     calendarAutoShown = preferredMediaView() !== 'calendar';
     showCalendar(true, true);
     updateCalendarMiniPlayer();
     return;
   }
+  mediaInactiveSince = 0;
 
   if (calendarAutoShown) {
     calendarAutoShown = false;
@@ -348,11 +403,8 @@ function applyMedia(data) {
     bg.style.backgroundImage = '';
   }
 
-  const playing = data.playbackStatus === 'Playing';
-  $('play-icon').style.display = playing ? 'none' : '';
-  $('pause-icon').style.display = playing ? '' : 'none';
+  renderMediaPlaybackIcons(playbackStatus);
   syncMediaProgress(getMediaTimelinePosition(), mediaTimelineDuration || data.duration);
-  syncLockMediaPlaybackIcon(playing);
   updateCalendarMiniPlayer();
 }
 
@@ -380,10 +432,7 @@ function updateCalendarMiniPlayer() {
     cover.classList.toggle('has-image', !!mediaData.thumbnail);
     cover.style.backgroundImage = mediaData.thumbnail ? `url("${mediaData.thumbnail}")` : '';
   }
-  const playing = mediaData.playbackStatus === 'Playing';
-  $('mini-play-icon').style.display = playing ? 'none' : '';
-  $('mini-pause-icon').style.display = playing ? '' : 'none';
-  syncLockMediaPlaybackIcon(playing);
+  renderMediaPlaybackIcons(String(mediaData.playbackStatus || 'Paused'));
   mini.classList.add('show');
 }
 
@@ -399,8 +448,8 @@ function refreshMediaEmpty() {
   art.style.backgroundImage = '';
   panel.classList.remove('has-image');
   bg.style.backgroundImage = '';
-  $('play-icon').style.display = '';
-  $('pause-icon').style.display = 'none';
+  clearMediaPlaybackStatusOverride();
+  renderMediaPlaybackIcons('Paused');
   mediaSeekDragging = false;
   mediaSeekQueuedSeconds = null;
   mediaSeekOverrideUntil = 0;
@@ -416,29 +465,45 @@ function refreshMediaEmpty() {
 
 async function mediaAction(action) {
   try {
-    if (action === 'playpause' && mediaData) {
-      const playing = mediaData.playbackStatus === 'Playing';
-      const nextStatus = playing ? 'Paused' : 'Playing';
-      const currentPos = getMediaTimelinePosition();
-      $('play-icon').style.display = playing ? '' : 'none';
-      $('pause-icon').style.display = playing ? 'none' : '';
-      mediaData.playbackStatus = nextStatus;
-      mediaData.position = currentPos;
-      setMediaTimeline(
-        currentPos,
-        Math.max(0, Math.floor(Number(mediaData.duration) || 0)),
-        nextStatus,
-        mediaTrackKey(mediaData),
-      );
-      syncMediaProgress(currentPos, mediaTimelineDuration || mediaData.duration, true);
-      updateCalendarMiniPlayer();
-      syncLockMediaPlaybackIcon(!playing);
-      if (typeof refreshLockScreen === 'function') refreshLockScreen();
+    const normalizedAction = String(action || '').toLowerCase();
+    if (normalizedAction === 'playpause') {
+      const current = mediaData && mediaData.playbackStatus
+        ? String(mediaData.playbackStatus)
+        : String(mediaTimelineStatus || 'Paused');
+      const nextStatus = current === 'Playing' ? 'Paused' : 'Playing';
+      setMediaPlaybackStatusOverride(nextStatus, MEDIA_ACTION_STATUS_OVERRIDE_MS);
+      renderMediaPlaybackIcons(nextStatus);
+      const now = Date.now();
+      const anchorPosition = getMediaTimelinePosition();
+      const timelineDuration = Math.max(0, Number((mediaData && mediaData.duration) || mediaTimelineDuration || 0));
+      setMediaTimeline(anchorPosition, timelineDuration, nextStatus, mediaTrackKey(mediaData), now);
+      if (mediaData) {
+        mediaData.playbackStatus = nextStatus;
+        mediaData.position = clampMediaSeconds(anchorPosition, timelineDuration || anchorPosition);
+        mediaData.timelineAtMs = now;
+      }
+      syncMediaProgress(anchorPosition, timelineDuration, true);
+      if (mediaData && typeof syncMediaModeFromPlayback === 'function') syncMediaModeFromPlayback(mediaData);
     }
+
     const res = await fetch(SERVER + '/media/' + action, { method: 'POST' });
     if (!res.ok) throw new Error('Media action failed');
-    setTimeout(fetchMedia, action === 'playpause' ? 320 : 620);
-  } catch { }
+
+    const payload = await res.json().catch(() => null);
+    if (payload && payload.ok === false) {
+      clearMediaPlaybackStatusOverride();
+      setTimeout(fetchMedia, 140);
+      setTimeout(fetchMedia, 480);
+      return;
+    }
+
+    setTimeout(fetchMedia, action === 'playpause' ? 120 : 220);
+    setTimeout(fetchMedia, action === 'playpause' ? 360 : 520);
+    setTimeout(fetchMedia, action === 'playpause' ? 900 : 1200);
+  } catch {
+    clearMediaPlaybackStatusOverride();
+    setTimeout(fetchMedia, 150);
+  }
 }
 
 async function fetchMedia() {

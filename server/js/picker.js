@@ -45,7 +45,7 @@ async function selectDevice(type, id) {
   const selectedDevice = deviceList.find(item => item && String(item.id) === String(id)) || null;
   const payload = type === 'speaker'
     ? { id, endpointId: selectedDevice && selectedDevice.endpointId ? String(selectedDevice.endpointId) : '' }
-    : { id };
+    : { id, endpointId: selectedDevice && selectedDevice.endpointId ? String(selectedDevice.endpointId) : '' };
   try {
     const res = await fetch(SERVER + endpoint, {
       method: 'POST',

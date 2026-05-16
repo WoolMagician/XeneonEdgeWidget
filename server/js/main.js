@@ -94,6 +94,13 @@ if (need.tasks)  { loadTasks(); }
     es.addEventListener('audio', e => {
       try { applyAudio(JSON.parse(e.data)); } catch {}
     });
+    es.addEventListener('audio-activity', e => {
+      try {
+        if (need.audio && typeof applyAudioActivity === 'function') {
+          applyAudioActivity(JSON.parse(e.data));
+        }
+      } catch {}
+    });
 
     es.onopen = () => {
       reconnectDelay = 2000;
