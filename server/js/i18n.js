@@ -200,7 +200,7 @@ const i18n = {
     ph_title: 'Event title', ph_notes: 'Short note',
     no_events: 'No events for this day',
     upcoming: 'Upcoming events', no_upcoming: 'No upcoming events',
-    center_event_now: 'Now', center_event_next: 'Next', center_event_none: 'No events today',
+    center_event_now: 'Now', center_event_next: 'Next Up', center_event_none: 'No events today',
     calendar_all_day: 'All day',
     calendar_source_local: 'Local',
     calendar_source_ical: 'Google',

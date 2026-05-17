@@ -3,9 +3,6 @@
 let mediaModeFrameUrl = '';
 let mediaModeLoaded = false;
 let mediaModePanelObserver = null;
-let mediaModeDockBlockUntil = 0;
-
-const MEDIA_MODE_DOCK_REOPEN_GUARD_MS = 450;
 
 function getMediaModeUrl() {
   const url = hubSettings && hubSettings.mediaMode ? hubSettings.mediaMode.url : '';
@@ -167,18 +164,10 @@ function showMediaModeDocked() {
 
 function syncMediaModeFromPlayback(data) {
   if (isMediaModeFullscreen()) return;
-  const now = Date.now();
-  const wantDock = shouldDockForMedia(data);
-
-  if (wantDock) {
-    if (!isMediaModeDocked() && now < mediaModeDockBlockUntil) return;
+  if (shouldDockForMedia(data)) {
     showMediaModeDocked();
     return;
   }
-
-  const status = normalizeMediaToken(data && data.playbackStatus);
-  const isPlayingNonJellyfin = status === 'playing' && !isJellyfinLikeSession(data);
-  if (isPlayingNonJellyfin) mediaModeDockBlockUntil = now + MEDIA_MODE_DOCK_REOPEN_GUARD_MS;
   if (isMediaModeDocked()) hideMediaModeOverlay();
 }
 

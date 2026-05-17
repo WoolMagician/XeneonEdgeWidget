@@ -316,25 +316,28 @@ function updateCenterCalendarEventWidget(force = false) {
   if (!force && centerCalendarEventRenderStamp === stamp) return;
   centerCalendarEventRenderStamp = stamp;
 
-  const badge = $('center-event-badge');
   const title = $('center-event-title');
   const time = $('center-event-time');
-  if (!badge || !title || !time) return;
+  const chip = $('center-event-chip');
+  if (!title || !time || !chip) return;
 
   const snapshot = getCenterCalendarDailySnapshot(now.getTime());
   root.classList.remove('now', 'next', 'empty');
 
   if (!snapshot.event || snapshot.kind === 'none') {
     root.classList.add('empty');
-    badge.textContent = '';
+    chip.hidden = true;
+    chip.style.display = 'none';
     title.textContent = t('center_event_none');
     time.textContent = '';
     return;
   }
 
+  chip.hidden = false;
+  chip.style.display = 'inline-flex';
   const isNow = snapshot.kind === 'now';
   root.classList.add(isNow ? 'now' : 'next');
-  badge.textContent = isNow ? t('center_event_now') : t('center_event_next');
+  chip.textContent = isNow ? t('center_event_now') : t('center_event_next');
   title.textContent = snapshot.event.title || t('ph_title');
   time.textContent = formatCalendarEventTimeLabel(snapshot.event);
 }

@@ -31,6 +31,7 @@ const appVuTargets = new Map();
 const appVuTargetsByPid = new Map();
 const appVuSeenAtById = new Map();
 const appVuSeenAtByPid = new Map();
+const AUDIO_VU_ACTIVITY_STALE_MS = 220;
 const AUDIO_VU_STALE_MS = 420;
 const AUDIO_VU_TRIM_MS = 2200;
 const AUDIO_VU_SILENCE_FLOOR = 2;
@@ -83,6 +84,47 @@ function clampPercent(value) {
   return Math.max(0, Math.min(100, Number(value) || 0));
 }
 
+function buildAppVuStateKey(id, pid) {
+  const safeId = String(id || '').trim();
+  if (safeId) return `id:${safeId}`;
+  const safePid = Number.isFinite(Number(pid)) ? Number(pid) : 0;
+  if (safePid > 0) return `pid:${safePid}`;
+  return '';
+}
+
+function readTrackedAppVuRawTarget(id, pid, now) {
+  const safeNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  let byId = 0;
+  const safeId = String(id || '').trim();
+  if (safeId) {
+    const idSeenAt = Number(appVuSeenAtById.get(safeId) || 0);
+    if (idSeenAt > 0) {
+      const idAge = safeNow - idSeenAt;
+      if (idAge <= AUDIO_VU_STALE_MS) byId = Number(appVuTargets.get(safeId) || 0);
+      if (idAge > AUDIO_VU_TRIM_MS) {
+        appVuTargets.delete(safeId);
+        appVuSeenAtById.delete(safeId);
+      }
+    }
+  }
+
+  let byPid = 0;
+  const safePid = Number.isFinite(Number(pid)) ? Number(pid) : 0;
+  if (safePid > 0) {
+    const pidSeenAt = Number(appVuSeenAtByPid.get(safePid) || 0);
+    if (pidSeenAt > 0) {
+      const pidAge = safeNow - pidSeenAt;
+      if (pidAge <= AUDIO_VU_STALE_MS) byPid = Number(appVuTargetsByPid.get(safePid) || 0);
+      if (pidAge > AUDIO_VU_TRIM_MS) {
+        appVuTargetsByPid.delete(safePid);
+        appVuSeenAtByPid.delete(safePid);
+      }
+    }
+  }
+
+  return Math.max(0, Math.min(100, Math.max(byId, byPid)));
+}
+
 function scaleVuByVolume(activityLevel, volumeLevel, muted = false) {
   if (muted) return 0;
   const activity = clampPercent(activityLevel);
@@ -102,7 +144,7 @@ function animateAudioActivityFrame(nowMs) {
   const last = audioActivityAnimLastAt || now;
   const dtMs = Math.max(1, Math.min(80, now - last));
   audioActivityAnimLastAt = now;
-  const stale = (now - lastAudioActivityAt) > 220;
+  const stale = (now - lastAudioActivityAt) > AUDIO_VU_ACTIVITY_STALE_MS;
 
   const currentSpeakerVolume = clampPercent(volSlider ? Number(volSlider.value) : (audioData && audioData.speaker ? audioData.speaker.volume : 0));
   const globalRawTarget = speakerMuted ? 0 : (stale ? 0 : speakerVuTarget);
@@ -119,29 +161,7 @@ function animateAudioActivityFrame(nowMs) {
     if (!id || !wrap) return;
     const isMuted = item.dataset.muted === 'true';
     const appVolume = clampPercent(Number(item.dataset.volume || 0));
-    let byId = 0;
-    const idSeenAt = Number(appVuSeenAtById.get(id) || 0);
-    if (idSeenAt > 0) {
-      const idAge = now - idSeenAt;
-      if (idAge <= AUDIO_VU_STALE_MS) byId = Number(appVuTargets.get(id) || 0);
-      if (idAge > AUDIO_VU_TRIM_MS) {
-        appVuTargets.delete(id);
-        appVuSeenAtById.delete(id);
-      }
-    }
-    let byPid = 0;
-    if (Number.isFinite(pid) && pid > 0) {
-      const pidSeenAt = Number(appVuSeenAtByPid.get(pid) || 0);
-      if (pidSeenAt > 0) {
-        const pidAge = now - pidSeenAt;
-        if (pidAge <= AUDIO_VU_STALE_MS) byPid = Number(appVuTargetsByPid.get(pid) || 0);
-        if (pidAge > AUDIO_VU_TRIM_MS) {
-          appVuTargetsByPid.delete(pid);
-          appVuSeenAtByPid.delete(pid);
-        }
-      }
-    }
-    const rawTarget = isMuted ? 0 : (stale ? 0 : Math.max(byId, byPid));
+    const rawTarget = isMuted ? 0 : (stale ? 0 : readTrackedAppVuRawTarget(id, pid, now));
     const target = scaleVuByVolume(rawTarget, appVolume, isMuted);
     const current = Number(item.dataset.vuLevel || 0);
     const smoothed = smoothVuLevelFrame(current, target, dtMs);
@@ -199,7 +219,7 @@ function ensureAudioActivityPolling() {
   fetchAudioActivity();
   // Fallback polling only when push updates are stale.
   audioActivityPollTimer = setInterval(() => {
-    if ((Date.now() - lastAudioActivityAt) <= 220) return;
+    if ((Date.now() - lastAudioActivityAt) <= AUDIO_VU_ACTIVITY_STALE_MS) return;
     fetchAudioActivity();
   }, 60);
 }
@@ -571,6 +591,19 @@ function renderAppMixer(rawApps) {
   if (!appMixerList || !appMixerShell) return;
   let missingIcon = false;
   const unresolvedIconPids = [];
+  const previousVuByKey = new Map();
+  appMixerList.querySelectorAll('.app-mixer-item[data-app-id]').forEach(item => {
+    const id = String(item.dataset.appId || '').trim();
+    const pid = Number(item.dataset.appPid || 0);
+    const key = buildAppVuStateKey(id, pid);
+    if (!key) return;
+    const level = Number(item.dataset.vuLevel || 0);
+    if (!Number.isFinite(level)) return;
+    previousVuByKey.set(key, clampPercent(level));
+  });
+
+  const now = Date.now();
+  const activityStale = (now - lastAudioActivityAt) > AUDIO_VU_ACTIVITY_STALE_MS;
   const apps = normalizeAudioApps(rawApps)
     .map(app => ({ app, presentation: resolveMixerPresentation(app) }))
     .sort(mixerSortComparator)
@@ -610,10 +643,13 @@ function renderAppMixer(rawApps) {
 
     const sliderWrap = document.createElement('div');
     sliderWrap.className = 'app-mixer-slider-wrap';
-    const vuById = Number(appVuTargets.get(app.id) || 0);
-    const vuByPid = app.processId > 0 ? Number(appVuTargetsByPid.get(app.processId) || 0) : 0;
-    const initialRawVu = Math.max(vuById, vuByPid, Math.max(0, Math.min(100, Number(app.activity) || 0)));
-    const initialVu = scaleVuByVolume(initialRawVu, app.volume, app.muted);
+    const vuKey = buildAppVuStateKey(app.id, app.processId);
+    const previousVu = vuKey ? previousVuByKey.get(vuKey) : undefined;
+    const trackedRawVu = activityStale ? 0 : readTrackedAppVuRawTarget(app.id, app.processId, now);
+    const snapshotRawVu = activityStale ? 0 : clampPercent(Number(app.activity) || 0);
+    const initialRawVu = Math.max(trackedRawVu, snapshotRawVu);
+    const seededVu = scaleVuByVolume(initialRawVu, app.volume, app.muted);
+    const initialVu = Number.isFinite(previousVu) ? previousVu : seededVu;
     item.dataset.vuLevel = String(initialVu);
     sliderWrap.style.setProperty('--vu-level', String(initialVu));
 

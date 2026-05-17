@@ -430,10 +430,12 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   grid-column: 1;
   grid-row: 1;
   position: relative;
-  border: 1px solid rgba(0,0,0,0.08);
-  background: #e6e8e9;
-  color: #2f3c40;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.24);
+  border: 1px solid rgba(255,255,255,0.10);
+  background:
+    radial-gradient(85% 120% at 0% 0%, rgba(var(--accent-rgb),0.16), transparent 58%),
+    rgba(8, 12, 12, 0.68);
+  color: #dce8e4;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.04);
   overflow: hidden;
   cursor: pointer;
   padding: 0;
@@ -451,8 +453,8 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   display: block;
   width: 100%;
   height: 100%;
-  background: #f9413a;
-  border-bottom: 1px solid rgba(0,0,0,0.14);
+  background: linear-gradient(180deg, #b53935, #9f2f2c);
+  border-bottom: 1px solid rgba(0,0,0,0.22);
 }
 
 .center-date-rings {
@@ -480,7 +482,7 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   width: var(--ring-hole-size);
   height: var(--ring-hole-size);
   border-radius: 50%;
-  background: #e6e8e9;
+  background: #0f1616;
   transform: translate(-50%, -50%);
   z-index: 1;
 }
@@ -492,7 +494,7 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   width: var(--ring-peg-width);
   height: var(--ring-peg-height);
   border-radius: 0 0 999px 999px;
-  background: #3e5b5f;
+  background: #8ea19c;
   z-index: 2;
 }
 
@@ -512,81 +514,77 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   font-weight: 900;
   line-height: 1;
   text-transform: uppercase;
-  color: #405f63;
+  color: #b5cbc4;
 }
 
 .center-date-day {
   font-size: 54px;
   line-height: 0.88;
   font-weight: 860;
-  color: #405f63;
+  color: #e8f3ef;
 }
 
 .center-date-event {
   grid-row: 3;
   grid-column: 1;
-  min-height: 50px;
-  padding: 7px 9px 9px;
+  min-height: 64px;
+  padding: 5px 8px 8px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  border-top: 1px solid rgba(0,0,0,0.08);
-  background: rgba(250,252,252,0.72);
-}
-
-.center-date-event-badge {
-  flex-shrink: 0;
-  min-width: 48px;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: 999px;
-  border: 1px solid rgba(64,95,99,0.2);
-  color: #3f5f63;
-  background: rgba(64,95,99,0.09);
-  font-size: 11px;
-  font-weight: 900;
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
+  gap: 0;
+  border-top: none;
+  background: transparent;
+  text-align: center;
 }
 
 .center-date-event-copy {
-  min-width: 0;
+  width: min(100%, 278px);
   display: grid;
-  gap: 2px;
+  justify-items: center;
+  gap: 5px;
+  padding: 0;
+}
+
+.center-date-event-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(167, 139, 250, 0.44);
+  background: rgba(167, 139, 250, 0.20);
+  color: #e8ddff;
+  font-size: 11px;
+  font-weight: 860;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  box-shadow: 0 0 14px rgba(167, 139, 250, 0.22);
 }
 
 .center-date-event-title,
 .center-date-event-time {
   min-width: 0;
+  width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .center-date-event-title {
-  color: #334a4e;
-  font-size: 13px;
+  color: #edf6f2;
+  font-size: 16px;
   font-weight: 860;
+  line-height: 1.15;
 }
 
 .center-date-event-time {
-  color: #4b6166;
-  font-size: 11.5px;
+  color: #bcd0ca;
+  font-size: 18px;
   font-weight: 780;
+  line-height: 1.15;
   font-variant-numeric: tabular-nums;
-}
-
-.center-date-event.now .center-date-event-badge {
-  color: #0f6f38;
-  background: rgba(30,215,96,0.16);
-  border-color: rgba(30,215,96,0.38);
-}
-
-.center-date-event.next .center-date-event-badge {
-  color: #23598d;
-  background: rgba(102,171,255,0.16);
-  border-color: rgba(102,171,255,0.38);
 }
 
 .center-date-event.empty {
@@ -594,16 +592,12 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   padding: 8px 10px;
 }
 
-.center-date-event.empty .center-date-event-badge {
-  display: none;
-}
-
 .center-date-event.empty .center-date-event-copy {
   justify-items: center;
 }
 
 .center-date-event.empty .center-date-event-title {
-  color: #607277;
+  color: #95aaa4;
   font-weight: 780;
 }
 
