@@ -178,6 +178,7 @@ function toggleMediaMode(forceOpen) {
 
   if (shouldOpen) {
     if (typeof closeWeatherDetails === 'function') closeWeatherDetails();
+    if (typeof closeCalendarOverlay === 'function') closeCalendarOverlay(true);
     if (typeof closeSettings === 'function') closeSettings();
     if (typeof closeAppSwitcher === 'function') closeAppSwitcher();
     if (typeof closeTabSwitcher === 'function') closeTabSwitcher();

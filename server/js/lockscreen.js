@@ -31,6 +31,7 @@ function _lockRafTick() {
 function openWidgetLockScreen() {
   const overlay = $('lockscreen-overlay');
   if (!overlay) return;
+  if (typeof closeCalendarOverlay === 'function') closeCalendarOverlay(true);
   closeWeatherDetails();
   closeSettings();
   if (typeof closeMediaMode === 'function') closeMediaMode();

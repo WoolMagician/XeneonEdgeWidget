@@ -301,6 +301,11 @@
   background: rgba(255,255,255,0.04);
 }
 
+.event-item.holiday {
+  border-color: rgba(255,119,119,0.42);
+  background: linear-gradient(160deg, rgba(255,119,119,0.17), rgba(255,255,255,0.04));
+}
+
 .event-item-top { justify-content: space-between; gap: 10px; }
 
 .event-name {
@@ -352,6 +357,12 @@
   border-color: rgba(var(--accent-rgb),0.34);
   background: rgba(var(--accent-rgb),0.14);
   color: #eff7f4;
+}
+
+.event-badge.holiday {
+  border-color: rgba(255,119,119,0.45);
+  background: rgba(255,119,119,0.16);
+  color: #ffd7d9;
 }
 
 .event-badge.special {

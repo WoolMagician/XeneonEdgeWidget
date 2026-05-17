@@ -374,6 +374,7 @@ function toggleWeatherDetails() {
   if (!overlay) return;
   overlay.hidden = !overlay.hidden;
   if (!overlay.hidden) {
+    if (typeof closeCalendarOverlay === 'function') closeCalendarOverlay(true);
     renderWeatherDetails();
     if (!weatherData) fetchWeather();
   }

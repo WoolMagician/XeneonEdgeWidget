@@ -93,10 +93,6 @@
 
       <div class="media-header">
         <div class="app-pill media-app-pill"><span class="app-indicator"></span><span id="media-app">Media</span></div>
-        <button class="calendar-entry" type="button" onclick="showCalendar(true)" data-i18n-title="open_calendar">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
-          <span data-i18n="open_calendar">Calendario</span>
-        </button>
       </div>
 
       <div class="media-art" id="media-art">
@@ -718,6 +714,20 @@
         <div class="weather-forecast" id="weather-forecast"></div>
       </div>
     </div>
+  </section>
+</div>
+
+<div class="calendar-overlay" id="calendar-overlay" hidden onclick="if(event.target===this)closeCalendarOverlay()">
+  <section class="calendar-overlay-panel" role="dialog" aria-modal="true" aria-labelledby="calendar-overlay-title">
+    <div class="calendar-overlay-head">
+      <div>
+        <div class="calendar-overlay-title" id="calendar-overlay-title" data-i18n="open_calendar">Calendario</div>
+      </div>
+      <button class="calendar-overlay-close" type="button" onclick="closeCalendarOverlay()" data-i18n-title="close" title="Chiudi">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm11.2 0L19 6.4 6.4 19 5 17.6 17.6 5Z"/></svg>
+      </button>
+    </div>
+    <div class="calendar-overlay-body" id="calendar-overlay-body"></div>
   </section>
 </div>
 

@@ -40,6 +40,8 @@ const CALENDAR_SYNC_DEFAULT_REFRESH_MINUTES = 10;
 const CALENDAR_SYNC_WINDOW_DAYS_PAST = 14;
 const CALENDAR_SYNC_WINDOW_DAYS_FUTURE = 365;
 const CALENDAR_SYNC_MAX_OCCURRENCES = 2000;
+const CALENDAR_HOLIDAY_FEED_URL = 'https://calendar.google.com/calendar/ical/it.italian%23holiday%40group.v.calendar.google.com/public/basic.ics';
+const CALENDAR_HOLIDAY_REFRESH_MS = 12 * 60 * 60 * 1000;
 const NEWS_SOURCE_DOMAIN_OVERRIDES = new Map([
   ['ansa', 'ansa.it'],
   ['ansait', 'ansa.it'],
@@ -209,12 +211,19 @@ let calendarSyncCache = {
   sourceName: '',
   error: '',
 };
+let calendarHolidayCache = {
+  events: [],
+  updatedAt: 0,
+  sourceName: '',
+  error: '',
+};
 let gpuPending = null;
 let cpuTempPending = null;
 let mediaPending = null;
 let weatherPending = null;
 let newsPending = null;
 let calendarSyncPending = null;
+let calendarHolidayPending = null;
 let windowAppsPending = null;
 let mediaSampleInFlight = false;
 let mediaStreamProcess = null;
@@ -1367,6 +1376,107 @@ function parseCalendarSyncFeed(text) {
   };
 }
 
+function normalizeHolidayCalendarEvent(event, sourceName = '') {
+  const source = event && typeof event === 'object' ? event : {};
+  const baseId = String(source.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`).replace(/[^A-Za-z0-9._@:-]/g, '-');
+  return {
+    ...source,
+    id: `holiday-${baseId}`.slice(0, 140),
+    title: String(source.title || '').trim().slice(0, 160) || 'Holiday',
+    notes: String(source.notes || '').trim().slice(0, 600),
+    location: String(source.location || '').trim().slice(0, 160),
+    source: 'holiday',
+    sourceLabel: sourceName || source.sourceLabel || 'Holidays',
+    readOnly: true,
+    special: false,
+    holiday: true,
+  };
+}
+
+function dedupeCalendarEvents(events) {
+  const seen = new Set();
+  const source = Array.isArray(events) ? events : [];
+  return source.filter(event => {
+    const id = String(event && event.id || '').trim();
+    const key = id || `${String(event && event.startsAt || '')}|${String(event && event.title || '')}|${String(event && event.source || '')}`;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function getCalendarHolidayEvents(forceRefresh = false) {
+  const baseMeta = {
+    enabled: true,
+    feedUrl: CALENDAR_HOLIDAY_FEED_URL,
+    updatedAt: 0,
+    stale: false,
+    sourceName: '',
+    error: '',
+    windowDaysPast: CALENDAR_SYNC_WINDOW_DAYS_PAST,
+    windowDaysFuture: CALENDAR_SYNC_WINDOW_DAYS_FUTURE,
+  };
+
+  const age = Date.now() - calendarHolidayCache.updatedAt;
+  if (!forceRefresh && calendarHolidayCache.updatedAt > 0 && age < CALENDAR_HOLIDAY_REFRESH_MS) {
+    return {
+      events: calendarHolidayCache.events,
+      meta: {
+        ...baseMeta,
+        updatedAt: calendarHolidayCache.updatedAt,
+        sourceName: calendarHolidayCache.sourceName || '',
+      },
+    };
+  }
+
+  if (calendarHolidayPending) return calendarHolidayPending;
+
+  const pendingPromise = (async () => {
+    try {
+      const ics = await fetchText(CALENDAR_HOLIDAY_FEED_URL, 5500);
+      const parsed = parseCalendarSyncFeed(ics);
+      const normalized = dedupeCalendarEvents(
+        (Array.isArray(parsed.events) ? parsed.events : []).map(event => normalizeHolidayCalendarEvent(event, parsed.sourceName || '')),
+      );
+      calendarHolidayCache = {
+        events: normalized,
+        updatedAt: Date.now(),
+        sourceName: parsed.sourceName || '',
+        error: '',
+      };
+      return {
+        events: normalized,
+        meta: {
+          ...baseMeta,
+          updatedAt: calendarHolidayCache.updatedAt,
+          sourceName: calendarHolidayCache.sourceName || '',
+          windowStartMs: parsed.windowStartMs,
+          windowEndMs: parsed.windowEndMs,
+        },
+      };
+    } catch (error) {
+      if (calendarHolidayCache.updatedAt > 0 && Array.isArray(calendarHolidayCache.events)) {
+        return {
+          events: calendarHolidayCache.events,
+          meta: {
+            ...baseMeta,
+            updatedAt: calendarHolidayCache.updatedAt,
+            sourceName: calendarHolidayCache.sourceName || '',
+            stale: true,
+            error: String(error && error.message || 'Holiday calendar sync failed').slice(0, 240),
+          },
+        };
+      }
+      throw error;
+    } finally {
+      calendarHolidayPending = null;
+    }
+  })();
+
+  calendarHolidayPending = pendingPromise;
+  return pendingPromise;
+}
+
 async function getCalendarSyncEvents(forceRefresh = false) {
   const settings = await readHubSettings().catch(() => null);
   const calendarSync = normalizeSettingsCalendarSync(settings && settings.calendarSync);
@@ -1472,21 +1582,39 @@ async function getCalendarSyncEvents(forceRefresh = false) {
 
 async function getMergedCalendarEvents(forceRefresh = false) {
   const localEvents = (await readEvents()).map(normalizeLocalCalendarEvent);
+  const holidaySynced = await getCalendarHolidayEvents(forceRefresh).catch(error => ({
+    events: [],
+    meta: {
+      enabled: true,
+      feedUrl: CALENDAR_HOLIDAY_FEED_URL,
+      updatedAt: 0,
+      stale: false,
+      sourceName: '',
+      error: String(error && error.message || 'Holiday calendar sync failed').slice(0, 240),
+      windowDaysPast: CALENDAR_SYNC_WINDOW_DAYS_PAST,
+      windowDaysFuture: CALENDAR_SYNC_WINDOW_DAYS_FUTURE,
+    },
+  }));
   try {
     const synced = await getCalendarSyncEvents(forceRefresh);
-    const remoteEvents = Array.isArray(synced.events) ? synced.events : [];
-    const merged = sortCalendarEvents([...localEvents, ...remoteEvents]);
+    const syncedRemote = Array.isArray(synced.events) ? synced.events : [];
+    const holidayRemote = Array.isArray(holidaySynced.events) ? holidaySynced.events : [];
+    const remoteEvents = sortCalendarEvents(dedupeCalendarEvents([...syncedRemote, ...holidayRemote]));
+    const merged = sortCalendarEvents(dedupeCalendarEvents([...localEvents, ...remoteEvents]));
     return {
       events: merged,
       localEvents,
       remoteEvents,
       sync: synced.meta,
+      holidaySync: holidaySynced.meta,
     };
   } catch (error) {
+    const holidayRemote = Array.isArray(holidaySynced.events) ? holidaySynced.events : [];
+    const remoteEvents = sortCalendarEvents(dedupeCalendarEvents(holidayRemote));
     return {
-      events: sortCalendarEvents(localEvents),
+      events: sortCalendarEvents(dedupeCalendarEvents([...localEvents, ...remoteEvents])),
       localEvents,
-      remoteEvents: [],
+      remoteEvents,
       sync: {
         enabled: true,
         feedUrl: '',
@@ -1498,6 +1626,7 @@ async function getMergedCalendarEvents(forceRefresh = false) {
         windowDaysPast: CALENDAR_SYNC_WINDOW_DAYS_PAST,
         windowDaysFuture: CALENDAR_SYNC_WINDOW_DAYS_FUTURE,
       },
+      holidaySync: holidaySynced.meta,
     };
   }
 }

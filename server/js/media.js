@@ -371,17 +371,13 @@ function applyMedia(data) {
       mediaInactiveSince = 0;
     }
     refreshMediaEmpty();
-    calendarAutoShown = preferredMediaView() !== 'calendar';
-    showCalendar(true, true);
+    calendarAutoShown = false;
     updateCalendarMiniPlayer();
     return;
   }
   mediaInactiveSince = 0;
 
-  if (calendarAutoShown) {
-    calendarAutoShown = false;
-    showCalendar(preferredMediaView() === 'calendar', true);
-  }
+  if (calendarAutoShown) calendarAutoShown = false;
 
   const app = localizeAppName(data.app) || t('media');
   $('media-app').textContent = app;

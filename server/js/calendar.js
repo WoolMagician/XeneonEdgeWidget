@@ -90,24 +90,75 @@
 })();
 /* ── End custom time picker ─────────────────────────────────── */
 
-function showCalendar(show, automatic) {
-  if (automatic === undefined) automatic = false;
-  calendarMode = !!show;
-  if (!automatic) {
-    calendarAutoShown = false;
-    if (typeof persistDashboardMediaView === 'function') {
-      persistDashboardMediaView(calendarMode ? 'calendar' : 'media');
-    }
-  }
-  $('media-panel').classList.toggle('calendar-mode', calendarMode);
+function getCalendarOverlay() {
+  return $('calendar-overlay');
+}
+
+function getCalendarOverlayBody() {
+  return $('calendar-overlay-body');
+}
+
+function ensureCalendarOverlayAttachment() {
+  const view = $('calendar-view');
+  const body = getCalendarOverlayBody();
+  if (!view || !body) return;
+  if (view.parentElement !== body) body.appendChild(view);
+}
+
+function openCalendarOverlay() {
+  const overlay = getCalendarOverlay();
+  const view = $('calendar-view');
+  if (!overlay || !view) return;
+  ensureCalendarOverlayAttachment();
+  if (typeof closeWeatherDetails === 'function') closeWeatherDetails();
+  if (typeof closeSettings === 'function') closeSettings();
+  if (typeof closeAppSwitcher === 'function') closeAppSwitcher();
+  if (typeof closeTabSwitcher === 'function') closeTabSwitcher();
+  if (typeof closeMediaMode === 'function') closeMediaMode();
+  overlay.hidden = false;
+  view.classList.add('open');
+  calendarMode = true;
+  calendarAutoShown = false;
+  if (typeof switchCalendarTaskView === 'function') switchCalendarTaskView('calendar', { persist: false });
   updateCalendarMiniPlayer();
-  if (calendarMode) {
-    renderCalendar();
-    if ('Notification' in window && Notification.permission === 'default') {
-      try { Promise.resolve(Notification.requestPermission()).catch(() => {}); } catch {}
-    }
+  renderCalendar();
+  if ('Notification' in window && Notification.permission === 'default') {
+    try { Promise.resolve(Notification.requestPermission()).catch(() => {}); } catch {}
   }
 }
+
+function closeCalendarOverlay(automatic) {
+  const auto = automatic === true;
+  const overlay = getCalendarOverlay();
+  const view = $('calendar-view');
+  if (overlay) overlay.hidden = true;
+  if (view) view.classList.remove('open');
+  calendarMode = false;
+  updateCalendarMiniPlayer();
+  if (!auto && typeof persistDashboardMediaView === 'function') {
+    persistDashboardMediaView('media');
+  }
+}
+
+function showCalendar(show, automatic) {
+  const auto = automatic === true;
+  const shouldOpen = !!show;
+
+  if (auto) {
+    if (!shouldOpen) closeCalendarOverlay(true);
+    return;
+  }
+
+  if (shouldOpen) {
+    openCalendarOverlay();
+    if (typeof persistDashboardMediaView === 'function') persistDashboardMediaView('calendar');
+    return;
+  }
+  closeCalendarOverlay(false);
+}
+
+ensureCalendarOverlayAttachment();
+closeCalendarOverlay(true);
 
 const CAL_SYNC_UI_MIN_REFRESH_MINUTES = 1;
 const CAL_SYNC_UI_MAX_REFRESH_MINUTES = 360;
@@ -142,6 +193,7 @@ function normalizeCalendarEventItem(event, sourceHint = 'local') {
   const source = event && typeof event === 'object' ? event : {};
   const startsAt = String(source.startsAt || '').trim();
   const endsAt = String(source.endsAt || '').trim();
+  const sourceType = String(source.source || sourceHint || '').trim().toLowerCase();
   return {
     ...source,
     id: String(source.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`).slice(0, 120),
@@ -155,8 +207,9 @@ function normalizeCalendarEventItem(event, sourceHint = 'local') {
     sourceLabel: String(source.sourceLabel || '').trim(),
     isAllDay: !!source.isAllDay,
     endExclusive: !!source.endExclusive,
-    readOnly: source.readOnly === undefined ? sourceHint === 'ical' : !!source.readOnly,
+    readOnly: source.readOnly === undefined ? (sourceType === 'ical' || sourceType === 'holiday') : !!source.readOnly,
     special: !!source.special,
+    holiday: !!source.holiday || sourceType === 'holiday',
   };
 }
 
@@ -183,6 +236,11 @@ function getEventEndMs(event) {
   const parsedEnd = Date.parse(event && event.endsAt);
   if (Number.isFinite(parsedEnd) && parsedEnd > startMs) return parsedEnd;
   return startMs + (event && event.isAllDay ? 24 * 60 * 60 * 1000 : 60 * 1000);
+}
+
+function isHolidayCalendarEvent(event) {
+  const source = String(event && event.source || '').toLowerCase();
+  return !!(event && event.holiday) || source === 'holiday';
 }
 
 function eventIntersectsDateValue(event, dateValue) {
@@ -241,12 +299,25 @@ function renderCalendar() {
     cell.type = 'button';
     cell.className = 'day-cell';
     const dayEvents = eventsForDate(dateValue);
+    const dayHolidays = dayEvents.filter(isHolidayCalendarEvent);
+    const dayRegularEvents = dayEvents.filter(event => !isHolidayCalendarEvent(event));
     if (dateValue === todayValue) cell.classList.add('today');
     if (dateValue === selectedCalendarDate) cell.classList.add('selected');
-    if (dayEvents.length) cell.classList.add('has-events');
-    if (dayEvents.some(event => event.special)) cell.classList.add('has-special-events');
-    if (dayEvents.some(event => event.source === 'ical')) cell.classList.add('has-remote-events');
-    cell.textContent = day;
+    if (dayRegularEvents.length) cell.classList.add('has-events');
+    if (dayHolidays.length) cell.classList.add('has-holidays');
+    if (dayEvents.some(event => String(event && event.source || '').toLowerCase() === 'ical')) cell.classList.add('has-remote-events');
+    const dayNumber = document.createElement('span');
+    dayNumber.className = 'day-cell-number';
+    dayNumber.textContent = String(day);
+    cell.appendChild(dayNumber);
+    if (dayHolidays.length) {
+      const holidayLabel = document.createElement('span');
+      holidayLabel.className = 'day-cell-holiday';
+      const baseTitle = dayHolidays[0] && dayHolidays[0].title ? dayHolidays[0].title : t('calendar_holiday');
+      holidayLabel.textContent = dayHolidays.length > 1 ? `${baseTitle} +${dayHolidays.length - 1}` : baseTitle;
+      holidayLabel.title = dayHolidays.map(event => event && event.title ? event.title : t('calendar_holiday')).filter(Boolean).join(' · ');
+      cell.appendChild(holidayLabel);
+    }
     cell.onclick = () => openDayModal(dateValue);
     days.appendChild(cell);
   }
@@ -256,6 +327,7 @@ function renderCalendar() {
 
 function getCalendarEventSourceLabel(event) {
   const source = String(event && event.source || '').toLowerCase();
+  if (source === 'holiday') return event && event.sourceLabel ? event.sourceLabel : t('calendar_source_holiday');
   if (source === 'ical') return event && event.sourceLabel ? event.sourceLabel : t('calendar_source_ical');
   return t('calendar_source_local');
 }
@@ -348,6 +420,7 @@ function renderUpcoming() {
   const now = Date.now();
   const upcoming = calendarEvents
     .filter(event => {
+      if (isHolidayCalendarEvent(event)) return false;
       const endMs = getEventEndMs(event);
       return Number.isFinite(endMs) && endMs >= now - 60000;
     })
@@ -357,7 +430,7 @@ function renderUpcoming() {
       if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
       return String(a.title || '').localeCompare(String(b.title || ''), t('locale'), { sensitivity: 'base' });
     })
-    .slice(0, 5);
+    .slice(0, 4);
   list.innerHTML = '';
   if (!upcoming.length) {
     const empty = document.createElement('div');
@@ -382,11 +455,14 @@ function renderUpcoming() {
     name.textContent = e.title || t('ph_title');
     const meta = document.createElement('span');
     meta.className = 'upcoming-meta';
-    const metaParts = [formatCalendarEventUpcomingWhen(e), getCalendarEventSourceLabel(e)];
-    if (e.location) metaParts.splice(1, 0, e.location);
-    meta.textContent = metaParts.filter(Boolean).join(' · ');
+    meta.textContent = formatCalendarEventUpcomingWhen(e);
+    const metaSecondary = document.createElement('span');
+    metaSecondary.className = 'upcoming-meta-secondary';
+    const secondaryParts = [e.location, getCalendarEventSourceLabel(e)].filter(Boolean);
+    metaSecondary.textContent = secondaryParts.join(' · ');
     main.appendChild(name);
     main.appendChild(meta);
+    if (metaSecondary.textContent) main.appendChild(metaSecondary);
     const when = document.createElement('span');
     when.className = 'upcoming-when';
     when.textContent = formatCalendarEventTimeLabel(e);
@@ -440,6 +516,7 @@ function renderDayModalEvents() {
   events.forEach(event => {
     const item = document.createElement('div');
     item.className = 'event-item';
+    if (isHolidayCalendarEvent(event)) item.classList.add('holiday');
     const top = document.createElement('div');
     top.className = 'event-item-top';
     const name = document.createElement('div');
@@ -464,7 +541,10 @@ function renderDayModalEvents() {
     const badges = document.createElement('div');
     badges.className = 'event-badges';
     const sourceBadge = document.createElement('span');
-    sourceBadge.className = `event-badge ${event.source === 'ical' ? 'ical' : 'local'}`;
+    const sourceClass = isHolidayCalendarEvent(event)
+      ? 'holiday'
+      : (event.source === 'ical' ? 'ical' : 'local');
+    sourceBadge.className = `event-badge ${sourceClass}`;
     sourceBadge.textContent = getCalendarEventSourceLabel(event);
     badges.appendChild(sourceBadge);
     if (event.special) {
@@ -514,10 +594,16 @@ async function loadCalendarEvents(forceRefresh = false) {
     const data = await res.json().catch(() => ({}));
     const localList = Array.isArray(data.localEvents)
       ? data.localEvents
-      : (Array.isArray(data.events) ? data.events.filter(event => String(event && event.source || '').toLowerCase() !== 'ical') : []);
+      : (Array.isArray(data.events) ? data.events.filter(event => {
+        const source = String(event && event.source || '').toLowerCase();
+        return source !== 'ical' && source !== 'holiday';
+      }) : []);
     const remoteList = Array.isArray(data.remoteEvents)
       ? data.remoteEvents
-      : (Array.isArray(data.events) ? data.events.filter(event => String(event && event.source || '').toLowerCase() === 'ical') : []);
+      : (Array.isArray(data.events) ? data.events.filter(event => {
+        const source = String(event && event.source || '').toLowerCase();
+        return source === 'ical' || source === 'holiday';
+      }) : []);
     calendarLocalEvents = localList.map(event => normalizeCalendarEventItem(event, 'local'));
     calendarRemoteEvents = remoteList.map(event => normalizeCalendarEventItem(event, 'ical'));
     calendarSyncMeta = data && data.sync && typeof data.sync === 'object' ? data.sync : null;

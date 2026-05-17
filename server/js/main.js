@@ -146,6 +146,12 @@ document.addEventListener('keydown', e => {
       closeMediaMode();
       return;
     }
+    const calendarOverlay = document.getElementById('calendar-overlay');
+    if (calendarOverlay && !calendarOverlay.hidden) {
+      e.preventDefault();
+      closeCalendarOverlay();
+      return;
+    }
     const weatherOverlay = document.getElementById('weather-overlay');
     if (weatherOverlay && !weatherOverlay.hidden) {
       e.preventDefault();
