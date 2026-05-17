@@ -334,6 +334,7 @@ internal static class Program
         var delayMs = Math.Clamp(intervalMs, 70, 500);
         string lastKey = string.Empty;
         string? lastThumbnail = null;
+        using var eventSignal = new MediaStreamEventSignal();
 
         while (true)
         {
@@ -401,7 +402,131 @@ internal static class Program
                 return 0;
             }
 
-            System.Threading.Thread.Sleep(delayMs);
+            eventSignal.WaitForSignal(delayMs);
+        }
+    }
+
+    private sealed class MediaStreamEventSignal : IDisposable
+    {
+        private readonly object _gate = new();
+        private readonly System.Threading.AutoResetEvent _signal = new(false);
+        private GlobalSystemMediaTransportControlsSessionManager? _manager;
+        private GlobalSystemMediaTransportControlsSession? _session;
+
+        public MediaStreamEventSignal()
+        {
+            try
+            {
+                var roInit = TryInitializeWinRt();
+                try
+                {
+                    _manager = AwaitAsync(
+                        GlobalSystemMediaTransportControlsSessionManager.RequestAsync(),
+                        5500,
+                        "stream.manager.request"
+                    ).GetAwaiter().GetResult();
+                }
+                finally
+                {
+                    CleanupWinRtInit(roInit);
+                }
+
+                if (_manager != null)
+                {
+                    _manager.CurrentSessionChanged += OnCurrentSessionChanged;
+                    AttachSession(_manager.GetCurrentSession());
+                }
+            }
+            catch
+            {
+                // Event path is best-effort; polling fallback still works.
+            }
+
+            // Force an immediate first sample.
+            SafeSignal();
+        }
+
+        public void WaitForSignal(int timeoutMs)
+        {
+            try
+            {
+                _signal.WaitOne(Math.Max(20, timeoutMs));
+            }
+            catch
+            {
+                // Ignore synchronization errors and continue with polling fallback.
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_gate)
+            {
+                DetachSession_NoLock();
+                if (_manager != null)
+                {
+                    try { _manager.CurrentSessionChanged -= OnCurrentSessionChanged; } catch { }
+                    _manager = null;
+                }
+            }
+
+            try { _signal.Dispose(); } catch { }
+        }
+
+        private void OnCurrentSessionChanged(GlobalSystemMediaTransportControlsSessionManager sender, CurrentSessionChangedEventArgs args)
+        {
+            lock (_gate)
+            {
+                try
+                {
+                    AttachSession(sender.GetCurrentSession());
+                }
+                catch { }
+            }
+            SafeSignal();
+        }
+
+        private void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
+        {
+            SafeSignal();
+        }
+
+        private void OnTimelinePropertiesChanged(GlobalSystemMediaTransportControlsSession sender, TimelinePropertiesChangedEventArgs args)
+        {
+            SafeSignal();
+        }
+
+        private void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
+        {
+            SafeSignal();
+        }
+
+        private void AttachSession(GlobalSystemMediaTransportControlsSession? nextSession)
+        {
+            if (ReferenceEquals(_session, nextSession)) return;
+            DetachSession_NoLock();
+
+            _session = nextSession;
+            if (_session == null) return;
+
+            try { _session.PlaybackInfoChanged += OnPlaybackInfoChanged; } catch { }
+            try { _session.TimelinePropertiesChanged += OnTimelinePropertiesChanged; } catch { }
+            try { _session.MediaPropertiesChanged += OnMediaPropertiesChanged; } catch { }
+        }
+
+        private void DetachSession_NoLock()
+        {
+            if (_session == null) return;
+
+            try { _session.PlaybackInfoChanged -= OnPlaybackInfoChanged; } catch { }
+            try { _session.TimelinePropertiesChanged -= OnTimelinePropertiesChanged; } catch { }
+            try { _session.MediaPropertiesChanged -= OnMediaPropertiesChanged; } catch { }
+            _session = null;
+        }
+
+        private void SafeSignal()
+        {
+            try { _signal.Set(); } catch { }
         }
     }
 
@@ -487,6 +612,10 @@ internal static class Program
             Artist = selected.Artist,
             Album = selected.Album,
             PlaybackStatus = selected.PlaybackStatus,
+            PlaybackRate = selected.PlaybackRate,
+            IsPlayEnabled = selected.IsPlayEnabled,
+            IsPauseEnabled = selected.IsPauseEnabled,
+            IsPlayPauseToggleEnabled = selected.IsPlayPauseToggleEnabled,
             Thumbnail = thumbnail,
             Position = selected.Position,
             Duration = selected.Duration,
@@ -629,7 +758,52 @@ internal static class Program
         var artist = props?.Artist ?? string.Empty;
         var album = props?.AlbumTitle ?? string.Empty;
         var status = playback.PlaybackStatus.ToString();
+        var controls = playback.Controls;
+        var canPlay = false;
+        var canPause = false;
+        var canTogglePlayPause = false;
+        double? playbackRate = null;
         var app = GetMediaAppName(source, title, album);
+
+        try
+        {
+            canPlay = controls != null && controls.IsPlayEnabled;
+        }
+        catch
+        {
+            canPlay = false;
+        }
+
+        try
+        {
+            canPause = controls != null && controls.IsPauseEnabled;
+        }
+        catch
+        {
+            canPause = false;
+        }
+
+        try
+        {
+            canTogglePlayPause = controls != null && controls.IsPlayPauseToggleEnabled;
+        }
+        catch
+        {
+            canTogglePlayPause = false;
+        }
+
+        try
+        {
+            var rate = playback.PlaybackRate;
+            if (rate.HasValue && !double.IsNaN(rate.Value) && !double.IsInfinity(rate.Value))
+            {
+                playbackRate = Math.Round(rate.Value, 4, MidpointRounding.AwayFromZero);
+            }
+        }
+        catch
+        {
+            playbackRate = null;
+        }
 
         if (string.Equals(app, "Spotify", StringComparison.OrdinalIgnoreCase)
             && string.IsNullOrWhiteSpace(artist)
@@ -668,6 +842,10 @@ internal static class Program
             Artist = artist,
             Album = album,
             PlaybackStatus = status,
+            PlaybackRate = playbackRate,
+            IsPlayEnabled = canPlay,
+            IsPauseEnabled = canPause,
+            IsPlayPauseToggleEnabled = canTogglePlayPause,
             Position = position,
             Duration = duration,
             ThumbnailRef = props?.Thumbnail,
@@ -1014,12 +1192,11 @@ internal static class Program
                 var deviceDesc = ReadEndpointRegistryValue(flow, endpointId, "{a45c254e-df1c-4efd-8020-67d146a850e0},2");
                 var interfaceName = ReadEndpointRegistryValue(flow, endpointId, "{026e516e-b814-414b-83cd-856d6fef4822},2");
 
-                if (string.IsNullOrWhiteSpace(friendlyName))
-                    friendlyName = ReadDevicePropertyString(device, PkeyDeviceFriendlyName);
-                if (string.IsNullOrWhiteSpace(deviceDesc))
-                    deviceDesc = ReadDevicePropertyString(device, PkeyDeviceDesc);
-                if (string.IsNullOrWhiteSpace(interfaceName))
-                    interfaceName = ReadDevicePropertyString(device, PkeyDeviceInterfaceFriendlyName);
+                // Keep endpoint metadata reads in the registry path only.
+                // Some driver/device combinations can crash the CLR in COM
+                // marshaling when opening IPropertyStore for fallback reads.
+                // Stability is more important here; endpointId remains as
+                // deterministic fallback when registry values are missing.
 
                 var displayName = FirstNonEmpty(friendlyName, deviceDesc, interfaceName, endpointId);
                 var label = FirstNonEmpty(deviceDesc, interfaceName, displayName);
@@ -1665,6 +1842,10 @@ internal sealed class MediaInfoSnapshot
     public string Artist { get; set; } = string.Empty;
     public string Album { get; set; } = string.Empty;
     public string PlaybackStatus { get; set; } = "Closed";
+    public double? PlaybackRate { get; set; }
+    public bool IsPlayEnabled { get; set; }
+    public bool IsPauseEnabled { get; set; }
+    public bool IsPlayPauseToggleEnabled { get; set; }
     public string? Thumbnail { get; set; }
     public double Position { get; set; }
     public int Duration { get; set; }
@@ -1682,6 +1863,10 @@ internal sealed class MediaInfoSnapshot
             Artist = string.Empty,
             Album = string.Empty,
             PlaybackStatus = "Closed",
+            PlaybackRate = null,
+            IsPlayEnabled = false,
+            IsPauseEnabled = false,
+            IsPlayPauseToggleEnabled = false,
             Thumbnail = null,
             Position = 0,
             Duration = 0,
@@ -1701,6 +1886,10 @@ internal sealed class MediaInfoSnapshot
             Artist = string.Empty,
             Album = string.Empty,
             PlaybackStatus = "Unavailable",
+            PlaybackRate = null,
+            IsPlayEnabled = false,
+            IsPauseEnabled = false,
+            IsPlayPauseToggleEnabled = false,
             Thumbnail = null,
             Position = 0,
             Duration = 0,
@@ -1728,6 +1917,10 @@ internal sealed class MediaSessionCandidate
     public string Artist { get; set; } = string.Empty;
     public string Album { get; set; } = string.Empty;
     public string PlaybackStatus { get; set; } = "Unknown";
+    public double? PlaybackRate { get; set; }
+    public bool IsPlayEnabled { get; set; }
+    public bool IsPauseEnabled { get; set; }
+    public bool IsPlayPauseToggleEnabled { get; set; }
     public double Position { get; set; }
     public int Duration { get; set; }
     public IRandomAccessStreamReference? ThumbnailRef { get; set; }

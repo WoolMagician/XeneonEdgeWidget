@@ -56,6 +56,7 @@ const BACKGROUND_EXT_BY_MIME = new Map([...BACKGROUND_MIME_BY_EXT.entries()].map
 const F = { NAME: 0, TYPE: 1, DIR: 2, DEVICE_NAME: 3, DEFAULT: 4, STATE: 7, MUTED: 8, VOL_PCT: 10, ITEM_ID: 17, CLI_ID: 18, WINDOW_TITLE: 21 };
 let audioCtlReady = fs.existsSync(AUDIOCTL_DLL);
 let audioCtlBuildInFlight = null;
+const MEDIA_DEBUG_LOGS = parseBooleanConfig(process.env.XEH_MEDIA_DEBUG, true);
 const FALLBACKS_DEFAULT_ENABLED = parseBooleanConfig(process.env.XEH_AUDIO_FALLBACKS, false);
 let fallbacksEnabled = FALLBACKS_DEFAULT_ENABLED;
 
@@ -186,6 +187,7 @@ let mediaCache = { data: null, updatedAt: 0 };
 let mediaPrimaryRetryNotBefore = 0;
 let mediaTimelineState = {
   key: '',
+  lastKeyChangedAt: 0,
   duration: 0,
   status: 'Paused',
   anchorPosition: 0,
@@ -219,6 +221,7 @@ let mediaStreamProcess = null;
 let mediaStreamStarting = false;
 let mediaStreamBuffer = '';
 let mediaStreamRestartNotBefore = 0;
+let mediaStreamRecycleTimer = null;
 let mediaStreamWaiterSeq = 0;
 const mediaStreamWaiters = new Map();
 let lastMediaRequestAt = 0;
@@ -267,6 +270,9 @@ const MEDIA_TRANSIENT_CLOSE_GRACE_MS = 4500;
 const MEDIA_PLAYING_STALL_EPSILON_SECONDS = 0.03;
 const MEDIA_PLAYING_STALL_FORCE_PAUSED_MS = 1350;
 const MEDIA_PLAYING_STALL_MIN_SAMPLES = 4;
+const MEDIA_PLAYBACK_RATE_FORCE_PAUSED_MAX = 0.05;
+const MEDIA_TRACK_CHANGE_HINT_GRACE_MS = 1700;
+const MEDIA_EXPLICIT_CLOSE_GRACE_MS = 0;
 let mediaTransientHoldState = { key: '', startedAt: 0 };
 const AUDIOCTL_MEDIA_ACTION_MAP = Object.freeze({
   playpause: 'media-playpause',
@@ -1919,7 +1925,12 @@ function clampMediaPosition(position, duration) {
 
 function setMediaTimelineState(position, duration, status, key, now, rawPosition = position) {
   const safeDuration = Math.max(0, Number(duration) || 0);
-  mediaTimelineState.key = key || '';
+  const previousKey = mediaTimelineState.key;
+  const nextKey = key || '';
+  if (nextKey !== previousKey) {
+    mediaTimelineState.lastKeyChangedAt = now;
+  }
+  mediaTimelineState.key = nextKey;
   mediaTimelineState.duration = safeDuration;
   mediaTimelineState.status = String(status || 'Paused');
   mediaTimelineState.anchorPosition = clampMediaPosition(position, safeDuration);
@@ -1945,8 +1956,120 @@ function resetMediaPlayingStallState() {
   mediaTimelineState.playingStallSamples = 0;
 }
 
-function resolveStablePlaybackStatus(rawStatus, sameItem, now) {
+function logMediaDebug(message, details = null) {
+  if (!MEDIA_DEBUG_LOGS) return;
+  if (details && typeof details === 'object') {
+    try {
+      console.log(`[media-debug] ${message} ${JSON.stringify(details)}`);
+      return;
+    } catch { }
+  }
+  console.log(`[media-debug] ${message}`);
+}
+
+function inferPlaybackStatusFromHints(rawStatus, data, context = null) {
   const normalizedRaw = String(rawStatus || 'Paused');
+  if (!data || typeof data !== 'object') return normalizedRaw;
+
+  const playbackRate = Number(data.playbackRate);
+  const isPlayEnabled = data.isPlayEnabled === true;
+  const isPauseEnabled = data.isPauseEnabled === true;
+  const controlsHintPlaying = isPauseEnabled && !isPlayEnabled;
+  const controlsHintPaused = isPlayEnabled && !isPauseEnabled;
+  const sameItem = !!(context && context.sameItem);
+  const rawPosition = Number(context && context.rawPosition);
+  const lastRawPosition = Number(context && context.lastRawPosition);
+  const keyChangedAgoMs = Number(context && context.keyChangedAgoMs);
+  const rawDelta = Number.isFinite(rawPosition) && Number.isFinite(lastRawPosition)
+    ? (rawPosition - lastRawPosition)
+    : 0;
+
+  if (normalizedRaw === 'Paused') {
+    if (controlsHintPlaying) {
+      logMediaDebug('Promoted to Playing from controls hint', {
+        rawStatus: normalizedRaw,
+        playbackRate: Number.isFinite(playbackRate) ? playbackRate : null,
+        isPlayEnabled,
+        isPauseEnabled,
+        rawPosition: Number.isFinite(rawPosition) ? rawPosition : null,
+        lastRawPosition: Number.isFinite(lastRawPosition) ? lastRawPosition : null,
+        sameItem,
+      });
+      return 'Playing';
+    }
+
+    if (Number.isFinite(playbackRate) && playbackRate > MEDIA_PLAYBACK_RATE_FORCE_PAUSED_MAX) {
+      logMediaDebug('Promoted to Playing from playbackRate hint', {
+        rawStatus: normalizedRaw,
+        playbackRate,
+        isPlayEnabled,
+        isPauseEnabled,
+        rawPosition: Number.isFinite(rawPosition) ? rawPosition : null,
+        lastRawPosition: Number.isFinite(lastRawPosition) ? lastRawPosition : null,
+        sameItem,
+      });
+      return 'Playing';
+    }
+
+    return normalizedRaw;
+  }
+
+  if (normalizedRaw !== 'Playing') return normalizedRaw;
+
+  if (controlsHintPaused) {
+    if (sameItem && Number.isFinite(keyChangedAgoMs) && keyChangedAgoMs <= MEDIA_TRACK_CHANGE_HINT_GRACE_MS) {
+      logMediaDebug('Controls suggest paused during track-change grace; keeping Playing', {
+        rawStatus: normalizedRaw,
+        playbackRate: Number.isFinite(playbackRate) ? playbackRate : null,
+        isPlayEnabled,
+        isPauseEnabled,
+        rawPosition: Number.isFinite(rawPosition) ? rawPosition : null,
+        lastRawPosition: Number.isFinite(lastRawPosition) ? lastRawPosition : null,
+        rawDelta,
+        keyChangedAgoMs,
+        sameItem,
+      });
+      return normalizedRaw;
+    }
+
+    logMediaDebug('Forced paused from controls hint while status is Playing', {
+      rawStatus: normalizedRaw,
+      playbackRate: Number.isFinite(playbackRate) ? playbackRate : null,
+      isPlayEnabled,
+      isPauseEnabled,
+      rawPosition: Number.isFinite(rawPosition) ? rawPosition : null,
+      lastRawPosition: Number.isFinite(lastRawPosition) ? lastRawPosition : null,
+      rawDelta,
+      keyChangedAgoMs: Number.isFinite(keyChangedAgoMs) ? keyChangedAgoMs : null,
+      sameItem,
+    });
+    return 'Paused';
+  }
+
+  if (Number.isFinite(playbackRate) && playbackRate <= MEDIA_PLAYBACK_RATE_FORCE_PAUSED_MAX) {
+    logMediaDebug('PlaybackRate is 0 while status is Playing; trusting status', {
+      rawStatus: normalizedRaw,
+      playbackRate,
+      isPlayEnabled,
+      isPauseEnabled,
+      rawPosition: Number.isFinite(rawPosition) ? rawPosition : null,
+      lastRawPosition: Number.isFinite(lastRawPosition) ? lastRawPosition : null,
+      sameItem,
+    });
+  }
+
+  return normalizedRaw;
+}
+
+function resolveStablePlaybackStatus(rawStatus, sameItem, now, immediate = false) {
+  const normalizedRaw = String(rawStatus || 'Paused');
+  if (immediate) {
+    mediaTimelineState.pendingStatus = '';
+    mediaTimelineState.pendingSince = 0;
+    mediaTimelineState.pendingCount = 0;
+    return normalizedRaw;
+  }
+
   if (!sameItem) {
     mediaTimelineState.pendingStatus = '';
     mediaTimelineState.pendingSince = 0;
@@ -1987,10 +2110,27 @@ function stabilizeLiveMediaPosition(nextData) {
   const normalized = { ...nextData };
   normalized.duration = Math.max(0, Number(normalized.duration) || 0);
   normalized.position = clampMediaPosition(normalized.position, normalized.duration);
+  const rawPosition = normalized.position;
   const key = mediaItemKey(normalized);
-  const rawStatus = String(normalized.playbackStatus || 'Paused');
+  const rawReportedStatus = String(normalized.playbackStatus || 'Paused');
   const sameItem = key === mediaTimelineState.key;
-  let status = resolveStablePlaybackStatus(rawStatus, sameItem, now);
+  const playbackRate = Number(normalized.playbackRate);
+  const controlsUnavailable = normalized.isPlayEnabled === false && normalized.isPauseEnabled === false;
+  const stalePlayingWithoutControls = rawReportedStatus === 'Playing'
+    && controlsUnavailable
+    && (!Number.isFinite(playbackRate) || playbackRate <= MEDIA_PLAYBACK_RATE_FORCE_PAUSED_MAX);
+  const rawStatus = inferPlaybackStatusFromHints(rawReportedStatus, normalized, {
+    sameItem,
+    rawPosition,
+    lastRawPosition: mediaTimelineState.lastRawPosition,
+    keyChangedAgoMs: Math.max(0, now - Number(mediaTimelineState.lastKeyChangedAt || 0)),
+  });
+  const shouldRecycleForHintMismatch = rawReportedStatus === 'Playing' && rawStatus === 'Paused' && !!normalized.active;
+  if (stalePlayingWithoutControls && !sameItem && normalized.active) {
+    scheduleMediaStreamRecycle('stale-playing-no-controls');
+  }
+  const statusFromHints = rawStatus !== rawReportedStatus;
+  let status = resolveStablePlaybackStatus(rawStatus, sameItem, now, statusFromHints);
   normalized.playbackStatus = status;
 
   if (!normalized.active || !key) {
@@ -2006,54 +2146,32 @@ function stabilizeLiveMediaPosition(nextData) {
   }
 
   const projected = getMediaTimelineStatePosition(now);
-  const rawPosition = normalized.position;
   const drift = rawPosition - projected;
-  let forcedPausedByStall = false;
-
-  if (status === 'Playing' && mediaTimelineState.status === 'Playing') {
-    const rawDeltaFromLast = rawPosition - mediaTimelineState.lastRawPosition;
-    const nearlyStill = Math.abs(rawDeltaFromLast) <= MEDIA_PLAYING_STALL_EPSILON_SECONDS;
-    const nearEnd = normalized.duration > 0 && (normalized.duration - rawPosition) <= 0.35;
-
-    if (nearlyStill && !nearEnd) {
-      if (!mediaTimelineState.playingStallSince) {
-        mediaTimelineState.playingStallSince = now;
-        mediaTimelineState.playingStallSamples = 1;
-      } else {
-        mediaTimelineState.playingStallSamples += 1;
-      }
-
-      const stalledForMs = Math.max(0, now - Number(mediaTimelineState.playingStallSince || now));
-      if (
-        mediaTimelineState.playingStallSamples >= MEDIA_PLAYING_STALL_MIN_SAMPLES
-        && stalledForMs >= MEDIA_PLAYING_STALL_FORCE_PAUSED_MS
-      ) {
-        status = 'Paused';
-        normalized.playbackStatus = 'Paused';
-        mediaTimelineState.pendingStatus = '';
-        mediaTimelineState.pendingSince = 0;
-        mediaTimelineState.pendingCount = 0;
-        forcedPausedByStall = true;
-      }
-    } else {
-      resetMediaPlayingStallState();
-    }
-  } else {
-    resetMediaPlayingStallState();
-  }
+  resetMediaPlayingStallState();
 
   if (status !== mediaTimelineState.status) {
+    logMediaDebug('Playback status transition', {
+      from: mediaTimelineState.status,
+      to: status,
+      rawReportedStatus,
+      rawStatus,
+      key,
+      rawPosition,
+      projected,
+      drift,
+    });
     // External transitions can report a stale raw position: keep projected when it
     // is plausibly newer than raw.
     if (status === 'Paused' && drift < -0.35 && drift > -40) {
-      normalized.position = forcedPausedByStall
-        ? clampMediaPosition(rawPosition, normalized.duration)
-        : clampMediaPosition(projected, normalized.duration);
+      normalized.position = clampMediaPosition(projected, normalized.duration);
     } else if (status === 'Playing' && drift < -0.8 && drift > -40) {
       normalized.position = clampMediaPosition(projected, normalized.duration);
     }
     setMediaTimelineState(normalized.position, normalized.duration, status, key, now, rawPosition);
     normalized.timelineAtMs = now;
+    if (shouldRecycleForHintMismatch && status === 'Paused') {
+      scheduleMediaStreamRecycle('playback-hint-mismatch');
+    }
     return normalized;
   }
 
@@ -2547,7 +2665,7 @@ function mediaTransientHoldKey(data) {
   return `app:${app}|${source}`;
 }
 
-function withinMediaTransientHoldWindow(previousData, now = Date.now()) {
+function withinMediaTransientHoldWindow(previousData, now = Date.now(), maxHoldMs = MEDIA_TRANSIENT_CLOSE_GRACE_MS) {
   const holdKey = mediaTransientHoldKey(previousData);
   if (!holdKey) return false;
 
@@ -2557,7 +2675,7 @@ function withinMediaTransientHoldWindow(previousData, now = Date.now()) {
   }
 
   const heldForMs = Math.max(0, now - Number(mediaTransientHoldState.startedAt || now));
-  return heldForMs <= MEDIA_TRANSIENT_CLOSE_GRACE_MS;
+  return heldForMs <= Math.max(0, Number(maxHoldMs) || 0);
 }
 
 function shouldHoldPreviousMediaSnapshot(nextData, previousData, previousAgeMs) {
@@ -2577,8 +2695,10 @@ function shouldHoldPreviousMediaSnapshot(nextData, previousData, previousAgeMs) 
 
   const nextStatus = String(nextData && nextData.playbackStatus || '').trim().toLowerCase();
   let shouldHold = false;
+  let holdWindowMs = MEDIA_TRANSIENT_CLOSE_GRACE_MS;
   if (!nextData || !nextData.active || nextStatus === 'closed' || nextStatus === 'unavailable') {
     shouldHold = true;
+    holdWindowMs = MEDIA_EXPLICIT_CLOSE_GRACE_MS;
   } else {
     const previousFamily = `${previousData.app || ''} ${previousData.source || ''}`.toLowerCase();
     const nextFamily = `${nextData.app || ''} ${nextData.source || ''}`.toLowerCase();
@@ -2594,7 +2714,7 @@ function shouldHoldPreviousMediaSnapshot(nextData, previousData, previousAgeMs) 
     return false;
   }
 
-  return withinMediaTransientHoldWindow(previousData);
+  return withinMediaTransientHoldWindow(previousData, Date.now(), holdWindowMs);
 }
 
 function blendHeldMediaSnapshot(nextData, previousData) {
@@ -2715,6 +2835,10 @@ function waitForMediaStreamSample(timeoutMs = MEDIA_STREAM_WAIT_MS) {
 }
 
 function stopMediaStream() {
+  if (mediaStreamRecycleTimer) {
+    clearTimeout(mediaStreamRecycleTimer);
+    mediaStreamRecycleTimer = null;
+  }
   const proc = mediaStreamProcess;
   mediaStreamProcess = null;
   mediaStreamStarting = false;
@@ -2723,6 +2847,17 @@ function stopMediaStream() {
   if (proc && !proc.killed) {
     try { proc.kill(); } catch {}
   }
+}
+
+function scheduleMediaStreamRecycle(reason = 'manual') {
+  if (mediaStreamRecycleTimer) return;
+  mediaStreamRecycleTimer = setTimeout(() => {
+    mediaStreamRecycleTimer = null;
+    stopMediaStream();
+    mediaStreamRestartNotBefore = Date.now() + 80;
+    ensureMediaStreamRunning();
+  }, 140);
+  if (typeof mediaStreamRecycleTimer.unref === 'function') mediaStreamRecycleTimer.unref();
 }
 
 function ensureMediaStreamRunning() {
