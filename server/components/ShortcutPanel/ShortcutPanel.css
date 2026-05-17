@@ -17,6 +17,18 @@
   pointer-events: none;
 }
 
+body:not([data-panel]) .center-column > .shortcut-panel {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+body:not([data-panel]) .center-column > .shortcut-panel::before {
+  display: none;
+}
+
 .shortcut-grid {
   position: relative;
   z-index: 1;
@@ -26,7 +38,7 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .shortcut-action-tile,
@@ -39,6 +51,17 @@
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
   min-width: 0;
   min-height: 0;
+}
+
+body:not([data-panel]) .center-column > .shortcut-panel .shortcut-action-tile,
+body:not([data-panel]) .center-column > .shortcut-panel .shortcut-mic-tile,
+body:not([data-panel]) .center-column > .shortcut-panel .shortcut-jellyfin-tile,
+body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
+  border: 1px solid rgba(255,255,255,0.085);
+  background: rgba(8, 12, 12, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
+  display: grid;
+  place-items: center;
 }
 
 .shortcut-action-tile {
@@ -76,8 +99,8 @@
 
 .shortcut-btn-wrap {
   position: relative;
-  width: clamp(84px, 26cqh, 124px);
-  height: clamp(84px, 26cqh, 124px);
+  width: clamp(80px, 24cqh, 118px);
+  height: clamp(80px, 24cqh, 118px);
   display: grid;
   place-items: center;
 }
@@ -120,8 +143,8 @@
 .shortcut-btn {
   position: relative;
   z-index: 1;
-  width: clamp(64px, 19cqh, 90px);
-  height: clamp(64px, 19cqh, 90px);
+  width: clamp(60px, 18cqh, 86px);
+  height: clamp(60px, 18cqh, 86px);
   border-radius: 50%;
   border: 1px solid rgba(255,255,255,0.12);
   cursor: pointer;
@@ -133,8 +156,8 @@
 }
 
 .shortcut-btn svg {
-  width: clamp(24px, 7.4cqh, 34px);
-  height: clamp(24px, 7.4cqh, 34px);
+  width: clamp(23px, 7cqh, 32px);
+  height: clamp(23px, 7cqh, 32px);
   fill: #fff;
   filter: drop-shadow(0 1px 4px rgba(0,0,0,0.34));
 }
@@ -176,21 +199,21 @@
 
 .shortcut-mic-tile .btn-wrap {
   grid-area: auto;
-  width: clamp(86px, 26cqh, 124px);
-  height: clamp(86px, 26cqh, 124px);
+  width: clamp(82px, 24cqh, 118px);
+  height: clamp(82px, 24cqh, 118px);
   margin: 0 auto;
   justify-self: center;
   align-self: center;
 }
 
 .shortcut-mic-tile .mic-btn {
-  width: clamp(64px, 19cqh, 90px);
-  height: clamp(64px, 19cqh, 90px);
+  width: clamp(60px, 18cqh, 86px);
+  height: clamp(60px, 18cqh, 86px);
 }
 
 .shortcut-mic-tile .mic-btn svg {
-  width: clamp(25px, 7.4cqh, 34px);
-  height: clamp(25px, 7.4cqh, 34px);
+  width: clamp(23px, 7cqh, 32px);
+  height: clamp(23px, 7cqh, 32px);
 }
 
 /* Force unmuted mic orbit/glow to green in this panel (muted stays red). */
@@ -236,8 +259,8 @@
 .shortcut-jellyfin-wrap {
   --jf-rgb: 170, 110, 255;
   position: relative;
-  width: clamp(84px, 26cqh, 124px);
-  height: clamp(84px, 26cqh, 124px);
+  width: clamp(80px, 24cqh, 118px);
+  height: clamp(80px, 24cqh, 118px);
   display: grid;
   place-items: center;
 }
@@ -281,8 +304,8 @@
 .shortcut-jellyfin-core {
   position: relative;
   z-index: 1;
-  width: clamp(64px, 19cqh, 90px);
-  height: clamp(64px, 19cqh, 90px);
+  width: clamp(60px, 18cqh, 86px);
+  height: clamp(60px, 18cqh, 86px);
   border-radius: 50%;
   border: 1px solid rgba(255,255,255,0.14);
   display: grid;
@@ -292,8 +315,8 @@
 }
 
 .shortcut-jellyfin-icon {
-  width: clamp(28px, 8cqh, 40px);
-  height: clamp(28px, 8cqh, 40px);
+  width: clamp(26px, 7.4cqh, 36px);
+  height: clamp(26px, 7.4cqh, 36px);
   object-fit: contain;
   display: block;
   filter: brightness(1.24) saturate(1.04) drop-shadow(0 1px 4px rgba(0,0,0,0.45));
@@ -362,8 +385,8 @@
 .shortcut-placeholder-wrap {
   --placeholder-rgb: 150, 160, 168;
   position: relative;
-  width: clamp(84px, 26cqh, 124px);
-  height: clamp(84px, 26cqh, 124px);
+  width: clamp(80px, 24cqh, 118px);
+  height: clamp(80px, 24cqh, 118px);
   display: grid;
   place-items: center;
 }
@@ -407,8 +430,8 @@
 .shortcut-placeholder-core {
   position: relative;
   z-index: 1;
-  width: clamp(64px, 19cqh, 90px);
-  height: clamp(64px, 19cqh, 90px);
+  width: clamp(60px, 18cqh, 86px);
+  height: clamp(60px, 18cqh, 86px);
   border-radius: 50%;
   border: 1px solid rgba(255,255,255,0.14);
   background: linear-gradient(145deg, #737d85, #4d565e);

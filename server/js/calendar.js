@@ -117,6 +117,8 @@ let calendarRemoteEvents = [];
 let calendarSyncMeta = null;
 let calendarRefreshTimer = null;
 let configuredCalendarRefreshMs = CAL_SYNC_UI_DEFAULT_REFRESH_MINUTES * 60 * 1000;
+let calendarEventsRevision = 0;
+let centerCalendarEventRenderStamp = '';
 
 function getConfiguredCalendarRefreshMinutes() {
   const source = hubSettings && hubSettings.calendarSync && Number(hubSettings.calendarSync.refreshMinutes);
@@ -159,6 +161,7 @@ function normalizeCalendarEventItem(event, sourceHint = 'local') {
 }
 
 function rebuildCalendarEvents() {
+  calendarEventsRevision += 1;
   const merged = [...calendarLocalEvents, ...calendarRemoteEvents];
   calendarEvents = merged.sort((a, b) => {
     const left = Date.parse(a && a.startsAt);
@@ -284,6 +287,58 @@ function formatCalendarEventUpcomingWhen(event) {
   return fmt.format(new Date(startMs));
 }
 
+function getCenterCalendarDailySnapshot(nowMs = Date.now()) {
+  const todayValue = toDateInputValue(new Date(nowMs));
+  const events = eventsForDate(todayValue).filter(event => (
+    Number.isFinite(getEventStartMs(event)) && Number.isFinite(getEventEndMs(event))
+  ));
+
+  const current = events.find(event => {
+    const startMs = getEventStartMs(event);
+    const endMs = getEventEndMs(event);
+    return startMs <= nowMs && endMs > nowMs;
+  });
+  if (current) return { kind: 'now', event: current };
+
+  const next = events.find(event => getEventStartMs(event) >= nowMs);
+  if (next) return { kind: 'next', event: next };
+
+  return { kind: 'none', event: null };
+}
+
+function updateCenterCalendarEventWidget(force = false) {
+  const root = $('center-date-event');
+  if (!root) return;
+
+  const now = new Date();
+  const minuteKey = `${toDateInputValue(now)}T${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const stamp = `${calendarEventsRevision}|${lang}|${minuteKey}`;
+  if (!force && centerCalendarEventRenderStamp === stamp) return;
+  centerCalendarEventRenderStamp = stamp;
+
+  const badge = $('center-event-badge');
+  const title = $('center-event-title');
+  const time = $('center-event-time');
+  if (!badge || !title || !time) return;
+
+  const snapshot = getCenterCalendarDailySnapshot(now.getTime());
+  root.classList.remove('now', 'next', 'empty');
+
+  if (!snapshot.event || snapshot.kind === 'none') {
+    root.classList.add('empty');
+    badge.textContent = '';
+    title.textContent = t('center_event_none');
+    time.textContent = '';
+    return;
+  }
+
+  const isNow = snapshot.kind === 'now';
+  root.classList.add(isNow ? 'now' : 'next');
+  badge.textContent = isNow ? t('center_event_now') : t('center_event_next');
+  title.textContent = snapshot.event.title || t('ph_title');
+  time.textContent = formatCalendarEventTimeLabel(snapshot.event);
+}
+
 function renderUpcoming() {
   const list = $('upcoming-list');
   if (!list) return;
@@ -306,6 +361,7 @@ function renderUpcoming() {
     empty.className = 'event-empty';
     empty.textContent = t('no_upcoming');
     list.appendChild(empty);
+    updateCenterCalendarEventWidget(true);
     return;
   }
   upcoming.forEach(e => {
@@ -336,6 +392,7 @@ function renderUpcoming() {
     item.appendChild(when);
     list.appendChild(item);
   });
+  updateCenterCalendarEventWidget(true);
 }
 
 function updateDayModalTitle() {

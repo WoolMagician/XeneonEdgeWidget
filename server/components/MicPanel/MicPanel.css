@@ -410,8 +410,8 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   min-height: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: minmax(0, 1fr) minmax(0, 0.7fr);
-  gap: 8px;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 0.34fr);
+  gap: 6px;
 }
 
 .center-calendar-tile,
@@ -438,7 +438,7 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   cursor: pointer;
   padding: 0;
   display: grid;
-  grid-template-rows: minmax(34px, 34px) minmax(0, 1fr);
+  grid-template-rows: minmax(34px, 34px) minmax(0, 1fr) auto;
   align-items: stretch;
 }
 
@@ -503,24 +503,112 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   place-items: center;
   column-gap: 6px;
-  padding: 8px 10px 10px;
+  padding: 8px 10px 7px;
   z-index: 1;
 }
 
 .center-date-month {
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 900;
   line-height: 1;
-  letter-spacing: 0.2px;
   text-transform: uppercase;
   color: #405f63;
 }
 
 .center-date-day {
-  font-size: 56px;
+  font-size: 54px;
   line-height: 0.88;
   font-weight: 860;
   color: #405f63;
+}
+
+.center-date-event {
+  grid-row: 3;
+  grid-column: 1;
+  min-height: 50px;
+  padding: 7px 9px 9px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid rgba(0,0,0,0.08);
+  background: rgba(250,252,252,0.72);
+}
+
+.center-date-event-badge {
+  flex-shrink: 0;
+  min-width: 48px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(64,95,99,0.2);
+  color: #3f5f63;
+  background: rgba(64,95,99,0.09);
+  font-size: 11px;
+  font-weight: 900;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.center-date-event-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.center-date-event-title,
+.center-date-event-time {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.center-date-event-title {
+  color: #334a4e;
+  font-size: 13px;
+  font-weight: 860;
+}
+
+.center-date-event-time {
+  color: #4b6166;
+  font-size: 11.5px;
+  font-weight: 780;
+  font-variant-numeric: tabular-nums;
+}
+
+.center-date-event.now .center-date-event-badge {
+  color: #0f6f38;
+  background: rgba(30,215,96,0.16);
+  border-color: rgba(30,215,96,0.38);
+}
+
+.center-date-event.next .center-date-event-badge {
+  color: #23598d;
+  background: rgba(102,171,255,0.16);
+  border-color: rgba(102,171,255,0.38);
+}
+
+.center-date-event.empty {
+  justify-content: center;
+  padding: 8px 10px;
+}
+
+.center-date-event.empty .center-date-event-badge {
+  display: none;
+}
+
+.center-date-event.empty .center-date-event-copy {
+  justify-items: center;
+}
+
+.center-date-event.empty .center-date-event-title {
+  color: #607277;
+  font-weight: 780;
+}
+
+.center-date-event.empty .center-date-event-time {
+  display: none;
 }
 
 .center-time-tile {
@@ -529,8 +617,8 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   display: grid;
   align-content: center;
   justify-items: center;
-  gap: 4px;
-  padding: 8px 6px;
+  gap: 5px;
+  padding: 10px 7px;
   background:
     radial-gradient(90% 120% at 0% 0%, rgba(var(--accent-rgb),0.16), transparent 56%),
     var(--floating-ui-bg);
@@ -609,8 +697,8 @@ body:not([data-panel]) .center-column > .mic-panel::before {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 0 14px;
+  gap: 6px;
+  padding: 0 10px;
   background:
     radial-gradient(90% 120% at 0% 0%, rgba(var(--accent-rgb),0.16), transparent 56%),
     var(--floating-ui-bg);
@@ -618,8 +706,8 @@ body:not([data-panel]) .center-column > .mic-panel::before {
 }
 
 .center-weather-tile svg {
-  width: 54px;
-  height: 54px;
+  width: 44px;
+  height: 44px;
   fill: var(--accent);
   filter: var(--icon-readability-filter);
   flex-shrink: 0;
@@ -627,7 +715,7 @@ body:not([data-panel]) .center-column > .mic-panel::before {
 
 .center-weather-temp {
   color: #ecf6f2;
-  font-size: 48px;
+  font-size: 38px;
   font-weight: 920;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -637,7 +725,7 @@ body:not([data-panel]) .center-column > .mic-panel::before {
 .center-weather-place {
   min-width: 0;
   color: #c0d0ca;
-  font-size: 32px;
+  font-size: 24px;
   font-weight: 820;
   white-space: nowrap;
   overflow: hidden;

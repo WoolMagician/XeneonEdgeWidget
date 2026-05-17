@@ -176,6 +176,10 @@ function tickClock() {
     centerDay.textContent = String(now.getDate());
   }
 
+  if (typeof updateCenterCalendarEventWidget === 'function') {
+    updateCenterCalendarEventWidget();
+  }
+
   fitClockText();
 }
 
