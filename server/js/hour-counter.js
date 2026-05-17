@@ -119,12 +119,16 @@ function renderHourCounter() {
   const playIcon = $('counter-play-icon');
   const stopIcon = $('counter-stop-icon');
   const totalEl = $('counter-today-total');
+  const sessionEl = $('counter-session-time');
   const statusEl = $('counter-status');
   if (!tile || !toggleBtn || !playIcon || !stopIcon || !totalEl || !statusEl) return;
 
   const running = !!(counterSnapshot && counterSnapshot.isRunning);
-  const totals = getCounterLiveTotals(Date.now());
+  const nowMs = Date.now();
+  const totals = getCounterLiveTotals(nowMs);
+  const sessionMs = getCounterActiveLiveMs(nowMs);
   totalEl.textContent = formatCounterDurationHm(totals.todayMs);
+  if (sessionEl) sessionEl.textContent = formatCounterDurationHms(sessionMs);
 
   tile.classList.toggle('running', running);
   playIcon.style.display = running ? 'none' : '';

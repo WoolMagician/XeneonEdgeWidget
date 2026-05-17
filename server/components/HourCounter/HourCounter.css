@@ -3,19 +3,38 @@
   --shortcut-hero-wrap-size: clamp(70px, min(84cqi, 84cqh), 152px);
   --shortcut-hero-core-size: clamp(60px, min(70cqi, 70cqh), 122px);
   --shortcut-hero-icon-size: clamp(25px, min(25cqi, 25cqh), 45px);
-  padding: 4px 6px;
-  border-color: rgba(120,167,255,0.24);
-  background: rgba(10,14,18,0.72);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .shortcut-counter-main {
+  position: relative;
   width: 100%;
   height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 0 2px 0 0;
+  gap: 10px;
+  padding: 8px 12px 8px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(120,167,255,0.24);
+  background:
+    linear-gradient(145deg, rgba(120,167,255,0.16), rgba(14,22,30,0.62)),
+    rgba(8,12,18,0.72);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+.shortcut-counter-main::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(120,167,255,0.95), rgba(120,167,255,0.24));
 }
 
 .shortcut-counter-copy-btn {
@@ -28,8 +47,7 @@
   padding: 0;
   text-align: left;
   cursor: pointer;
-  display: grid;
-  align-content: center;
+  display: block;
 }
 
 .shortcut-counter-copy-btn:disabled {
@@ -52,7 +70,7 @@
   display: grid;
   place-items: center;
   justify-self: end;
-  margin-right: 8px;
+  margin-right: 0;
   overflow: visible;
 }
 
@@ -70,39 +88,94 @@
 
 .shortcut-counter-copy {
   display: grid;
-  gap: 4px;
+  gap: 5px;
   align-content: center;
+  min-height: 100%;
+  padding: 3px 0 3px 0;
 }
 
 .shortcut-counter-kicker {
-  color: #9eb1be;
-  font-size: 10.5px;
+  color: #c6d6e6;
+  font-size: 12px;
   font-weight: 900;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  padding-left: 8px;
 }
 
-.shortcut-counter-total {
-  color: #eef5ff;
-  font-size: 20px;
-  line-height: 1;
-  font-weight: 950;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+.shortcut-counter-metric {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 10px;
+  padding-left: 8px;
 }
 
-.shortcut-counter-status {
-  color: #9db0bd;
-  font-size: 12px;
-  font-weight: 820;
+.shortcut-counter-metric-label {
+  color: #8ea2b4;
+  font-size: 11.8px;
+  font-weight: 780;
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.shortcut-counter-total {
+  color: #f0f6ff;
+  font-size: 25px;
+  line-height: 1;
+  font-weight: 940;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.shortcut-counter-session-time {
+  color: #deecff;
+  font-size: 21px;
+  line-height: 1;
+  font-weight: 885;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.shortcut-counter-status {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(157,176,189,0.34);
+  background: rgba(12,18,23,0.58);
+  color: #b5c7d2;
+  font-size: 12px;
+  font-weight: 840;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: 0;
+}
+
 .shortcut-counter-tile.running .shortcut-counter-wrap { --counter-rgb: 45, 211, 111; }
 .shortcut-counter-tile.running .shortcut-counter-wrap { --shortcut-primary: #1ebd68; }
-.shortcut-counter-tile.running .shortcut-counter-status { color: #67d79a; }
+.shortcut-counter-tile.running .shortcut-counter-main {
+  border-color: rgba(45,211,111,0.34);
+  background:
+    linear-gradient(145deg, rgba(45,211,111,0.18), rgba(10,25,16,0.66)),
+    rgba(8,12,18,0.72);
+}
+
+.shortcut-counter-tile.running .shortcut-counter-main::before {
+  background: linear-gradient(180deg, rgba(45,211,111,0.95), rgba(45,211,111,0.24));
+}
+
+.shortcut-counter-tile.running .shortcut-counter-status {
+  color: #9cebbf;
+  border-color: rgba(45,211,111,0.44);
+  background: rgba(12,38,24,0.54);
+}
 
 .counter-overlay[hidden] { display: none !important; }
 
