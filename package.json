@@ -5,7 +5,7 @@
   "private": true,
   "main": "server/server.js",
   "scripts": {
-    "start": "node server/server.js",
+    "start": "powershell -NoProfile -ExecutionPolicy Bypass -File server/kill-existing.ps1 && node server/server.js",
     "icue:validate": "icuewidget validate widget",
     "icue:package": "node tools/package-icue-widget.mjs"
   },

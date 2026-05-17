@@ -61,7 +61,7 @@ if (need.tasks)  { loadTasks(); }
     }
     if (need.audio && !pollFallbackAudioTimer) {
       fetchAudio();
-      pollFallbackAudioTimer = setInterval(fetchAudio, 5000);
+      pollFallbackAudioTimer = setInterval(fetchAudio, 1200);
     }
     if (need.media && !pollFallbackMediaTimer) {
       fetchMedia();

@@ -12,4 +12,6 @@ if errorlevel 1 (
   exit /b 1
 )
 
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kill-existing.ps1" >nul 2>nul
+
 start "Xenon Edge Widget" /min node "%~dp0server.js"

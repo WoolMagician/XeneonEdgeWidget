@@ -258,6 +258,7 @@ const AUDIO_ACTIVITY_STREAM_WAIT_MS = 160;
 const AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS = 550;
 const AUDIO_ACTIVITY_STREAM_MAX_BUFFER_CHARS = 64 * 1024;
 const AUDIO_ACTIVITY_SSE_PUSH_MIN_INTERVAL_MS = 14;
+const AUDIO_ACTIVITY_SILENCE_FLOOR = 2;
 const MEDIA_STREAM_KEEPALIVE_MS = 10000;
 const MEDIA_STREAM_CACHE_FRESH_MS = 320;
 const MEDIA_STREAM_CACHE_STALE_MS = 2200;
@@ -266,6 +267,7 @@ const MEDIA_STREAM_WAIT_MS = 180;
 const MEDIA_STREAM_RESTART_BACKOFF_MS = 600;
 const MEDIA_STREAM_MAX_BUFFER_CHARS = 128 * 1024;
 const MEDIA_SSE_PUSH_MIN_INTERVAL_MS = 90;
+const AUDIO_SSE_REFRESH_INTERVAL_MS = 450;
 const MEDIA_TRANSIENT_CLOSE_GRACE_MS = 4500;
 const MEDIA_PLAYING_STALL_EPSILON_SECONDS = 0.03;
 const MEDIA_PLAYING_STALL_FORCE_PAUSED_MS = 1350;
@@ -1767,6 +1769,7 @@ function displayAppName(name) {
   const value = String(name || '');
   if (/jellyfin/i.test(name || '')) return 'Jellyfin';
   if (/spotify/i.test(value)) return 'Spotify';
+  if (/youtube\s*music|music\.youtube\.com|ytmusic|cinhimbn[a-z]*ghhklpknlkffjgod/i.test(value)) return 'YouTube Music';
   if (/youtube/i.test(value)) return 'YouTube';
   if (/chrome|msedge|edge|firefox|brave|opera/i.test(value)) return 'YouTube';
   if (/zunemusic|zunevideo|microsoftmediaplayer|windowsmediaplayer/i.test(value)) return 'Lettore Multimediale';
@@ -1916,6 +1919,36 @@ function mediaItemKey(data) {
   return `${app}|${source}|${title}|${artist}`;
 }
 
+function mediaDriverIdForData(data) {
+  const merged = `${String(data && data.app || '')} ${String(data && data.source || '')}`.toLowerCase();
+  if (/youtube\s*music|music\.youtube\.com|ytmusic|cinhimbn[a-z]*ghhklpknlkffjgod/.test(merged)) return 'youtube-music';
+  if (/youtube/.test(merged)) return 'youtube';
+  return 'generic';
+}
+
+function mediaDriverOptions(driverId) {
+  const id = String(driverId || 'generic');
+  if (id === 'youtube') {
+    return {
+      allowControlPauseOverride: false,
+      allowControlPlayPromotion: false,
+      immediateRawStatusTransitions: true,
+    };
+  }
+  if (id === 'youtube-music') {
+    return {
+      allowControlPauseOverride: true,
+      allowControlPlayPromotion: true,
+      immediateRawStatusTransitions: true,
+    };
+  }
+  return {
+    allowControlPauseOverride: true,
+    allowControlPlayPromotion: true,
+    immediateRawStatusTransitions: false,
+  };
+}
+
 function clampMediaPosition(position, duration) {
   const safeDuration = Math.max(0, Number(duration) || 0);
   const safePosition = Math.max(0, Number(position) || 0);
@@ -1967,9 +2000,13 @@ function logMediaDebug(message, details = null) {
   console.log(`[media-debug] ${message}`);
 }
 
-function inferPlaybackStatusFromHints(rawStatus, data, context = null) {
+function inferPlaybackStatusFromHintsGeneric(rawStatus, data, context = null, options = null) {
   const normalizedRaw = String(rawStatus || 'Paused');
   if (!data || typeof data !== 'object') return normalizedRaw;
+  const opts = options && typeof options === 'object' ? options : {};
+  const allowControlPauseOverride = opts.allowControlPauseOverride !== false;
+  const allowControlPlayPromotion = opts.allowControlPlayPromotion !== false;
+  const driverId = String(opts.driverId || 'generic');
 
   const playbackRate = Number(data.playbackRate);
   const isPlayEnabled = data.isPlayEnabled === true;
@@ -1985,8 +2022,9 @@ function inferPlaybackStatusFromHints(rawStatus, data, context = null) {
     : 0;
 
   if (normalizedRaw === 'Paused') {
-    if (controlsHintPlaying) {
+    if (allowControlPlayPromotion && controlsHintPlaying) {
       logMediaDebug('Promoted to Playing from controls hint', {
+        driverId,
         rawStatus: normalizedRaw,
         playbackRate: Number.isFinite(playbackRate) ? playbackRate : null,
         isPlayEnabled,
@@ -2000,6 +2038,7 @@ function inferPlaybackStatusFromHints(rawStatus, data, context = null) {
 
     if (Number.isFinite(playbackRate) && playbackRate > MEDIA_PLAYBACK_RATE_FORCE_PAUSED_MAX) {
       logMediaDebug('Promoted to Playing from playbackRate hint', {
+        driverId,
         rawStatus: normalizedRaw,
         playbackRate,
         isPlayEnabled,
@@ -2016,9 +2055,10 @@ function inferPlaybackStatusFromHints(rawStatus, data, context = null) {
 
   if (normalizedRaw !== 'Playing') return normalizedRaw;
 
-  if (controlsHintPaused) {
+  if (allowControlPauseOverride && controlsHintPaused) {
     if (sameItem && Number.isFinite(keyChangedAgoMs) && keyChangedAgoMs <= MEDIA_TRACK_CHANGE_HINT_GRACE_MS) {
       logMediaDebug('Controls suggest paused during track-change grace; keeping Playing', {
+        driverId,
         rawStatus: normalizedRaw,
         playbackRate: Number.isFinite(playbackRate) ? playbackRate : null,
         isPlayEnabled,
@@ -2033,6 +2073,7 @@ function inferPlaybackStatusFromHints(rawStatus, data, context = null) {
     }
 
     logMediaDebug('Forced paused from controls hint while status is Playing', {
+      driverId,
       rawStatus: normalizedRaw,
       playbackRate: Number.isFinite(playbackRate) ? playbackRate : null,
       isPlayEnabled,
@@ -2048,6 +2089,7 @@ function inferPlaybackStatusFromHints(rawStatus, data, context = null) {
 
   if (Number.isFinite(playbackRate) && playbackRate <= MEDIA_PLAYBACK_RATE_FORCE_PAUSED_MAX) {
     logMediaDebug('PlaybackRate is 0 while status is Playing; trusting status', {
+      driverId,
       rawStatus: normalizedRaw,
       playbackRate,
       isPlayEnabled,
@@ -2059,6 +2101,16 @@ function inferPlaybackStatusFromHints(rawStatus, data, context = null) {
   }
 
   return normalizedRaw;
+}
+
+function inferPlaybackStatusFromHints(rawStatus, data, context = null) {
+  const driverId = mediaDriverIdForData(data);
+  const options = mediaDriverOptions(driverId);
+  return inferPlaybackStatusFromHintsGeneric(rawStatus, data, context, {
+    driverId,
+    allowControlPauseOverride: options.allowControlPauseOverride,
+    allowControlPlayPromotion: options.allowControlPlayPromotion,
+  });
 }
 
 function resolveStablePlaybackStatus(rawStatus, sameItem, now, immediate = false) {
@@ -2108,6 +2160,8 @@ function stabilizeLiveMediaPosition(nextData) {
   if (!nextData) return nextData;
   const now = Date.now();
   const normalized = { ...nextData };
+  const driverId = mediaDriverIdForData(normalized);
+  const driverOptions = mediaDriverOptions(driverId);
   normalized.duration = Math.max(0, Number(normalized.duration) || 0);
   normalized.position = clampMediaPosition(normalized.position, normalized.duration);
   const rawPosition = normalized.position;
@@ -2130,7 +2184,8 @@ function stabilizeLiveMediaPosition(nextData) {
     scheduleMediaStreamRecycle('stale-playing-no-controls');
   }
   const statusFromHints = rawStatus !== rawReportedStatus;
-  let status = resolveStablePlaybackStatus(rawStatus, sameItem, now, statusFromHints);
+  const immediateStatusFlip = statusFromHints || !!driverOptions.immediateRawStatusTransitions;
+  let status = resolveStablePlaybackStatus(rawStatus, sameItem, now, immediateStatusFlip);
   normalized.playbackStatus = status;
 
   if (!normalized.active || !key) {
@@ -2155,6 +2210,7 @@ function stabilizeLiveMediaPosition(nextData) {
       to: status,
       rawReportedStatus,
       rawStatus,
+      driverId,
       key,
       rawPosition,
       projected,
@@ -2867,7 +2923,7 @@ function ensureMediaStreamRunning() {
 
   mediaStreamStarting = true;
   mediaStreamBuffer = '';
-  const child = spawn(DOTNET_BIN, [AUDIOCTL_DLL, 'media-stream', String(MEDIA_STREAM_INTERVAL_MS)], {
+  const child = spawn(DOTNET_BIN, [AUDIOCTL_DLL, 'media-stream', String(MEDIA_STREAM_INTERVAL_MS), String(process.pid)], {
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -3398,13 +3454,18 @@ function normalizeAudioActivitySnapshot(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const speaker = Math.max(0, Math.min(100, Math.round(Number(source.speaker) || 0)));
   const appsRaw = Array.isArray(source.apps) ? source.apps : [];
-  const apps = appsRaw.map(item => {
+  let apps = appsRaw.map(item => {
     const id = sanitizeAudioSessionId(item && item.id);
     const processId = Number.isFinite(Number(item && item.processId)) ? Number(item.processId) : 0;
     if (!id && processId <= 0) return null;
     const activity = Math.max(0, Math.min(100, Math.round(Number(item && item.activity) || 0)));
     return { id, processId, activity };
   }).filter(Boolean);
+  // Session meters can occasionally report stale non-zero values while playback is
+  // paused/stopped. If endpoint activity is effectively silent, force per-app to zero.
+  if (speaker <= AUDIO_ACTIVITY_SILENCE_FLOOR && apps.length) {
+    apps = apps.map(item => ({ ...item, activity: 0 }));
+  }
   return { speaker, apps };
 }
 
@@ -3500,7 +3561,7 @@ function ensureAudioActivityStreamRunning() {
 
   audioActivityStreamStarting = true;
   audioActivityStreamBuffer = '';
-  const child = spawn(DOTNET_BIN, [AUDIOCTL_DLL, 'activity-stream', String(AUDIO_ACTIVITY_STREAM_INTERVAL_MS)], {
+  const child = spawn(DOTNET_BIN, [AUDIOCTL_DLL, 'activity-stream', String(AUDIO_ACTIVITY_STREAM_INTERVAL_MS), String(process.pid)], {
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -5006,6 +5067,45 @@ server.on('error', err => {
   }
 });
 
+let shutdownRequested = false;
+function shutdownServer(reason = 'signal', exitCode = 0) {
+  if (shutdownRequested) return;
+  shutdownRequested = true;
+  try {
+    for (const res of sseClients) {
+      try { res.end(); } catch {}
+    }
+    sseClients.clear();
+  } catch {}
+  try { if (audioActivityStreamProcess) stopAudioActivityStream(); } catch {}
+  try { if (mediaStreamProcess) stopMediaStream(); } catch {}
+  try {
+    server.close(() => process.exit(exitCode));
+  } catch {
+    process.exit(exitCode);
+    return;
+  }
+  const failSafe = setTimeout(() => process.exit(exitCode), 500);
+  if (typeof failSafe.unref === 'function') failSafe.unref();
+}
+
+process.on('SIGINT', () => shutdownServer('SIGINT', 0));
+process.on('SIGTERM', () => shutdownServer('SIGTERM', 0));
+process.on('SIGBREAK', () => shutdownServer('SIGBREAK', 0));
+process.on('SIGHUP', () => shutdownServer('SIGHUP', 0));
+process.on('uncaughtException', err => {
+  try { console.error('[Server] uncaughtException:', err && err.stack ? err.stack : err); } catch {}
+  shutdownServer('uncaughtException', 1);
+});
+process.on('unhandledRejection', reason => {
+  try { console.error('[Server] unhandledRejection:', reason); } catch {}
+  shutdownServer('unhandledRejection', 1);
+});
+process.on('exit', () => {
+  try { if (audioActivityStreamProcess) stopAudioActivityStream(); } catch {}
+  try { if (mediaStreamProcess) stopMediaStream(); } catch {}
+});
+
 // Try IPv6 dual-stack first (accepts both 127.0.0.1 and ::1).
 // Falls back to IPv4 via the error handler if IPv6 is unavailable.
 _startListen('::');
@@ -5027,7 +5127,7 @@ setInterval(async () => {
 setInterval(async () => {
   if (sseClients.size === 0) return;
   try { broadcastSSE('audio', await getAudioInfo()); } catch {}
-}, 5000).unref();
+}, AUDIO_SSE_REFRESH_INTERVAL_MS).unref();
 
 // Keep the audio-activity stream alive while requests are active.
 // When idle for a while, stop the stream to keep background usage low.

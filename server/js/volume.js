@@ -6,6 +6,7 @@ const appMixerVolumeInFlight = new Set();
 const mixerIconCache = new Map();
 const mixerIconByPidCache = new Map();
 const mixerIconByTitleCache = new Map();
+const mixerTitleTokenByPidCache = new Map();
 let mixerIconFetchInFlight = null;
 let mixerIconLastFetchAt = 0;
 let mixerProcessIconFetchInFlight = null;
@@ -32,12 +33,20 @@ const appVuSeenAtById = new Map();
 const appVuSeenAtByPid = new Map();
 const AUDIO_VU_STALE_MS = 420;
 const AUDIO_VU_TRIM_MS = 2200;
+const AUDIO_VU_SILENCE_FLOOR = 2;
 
 const APP_MUTE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63Zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71ZM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3ZM12 4 9.91 6.09 12 8.18V4Z"/></svg>';
 const APP_UNMUTE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3Zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02ZM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77 0-4.28-2.99-7.86-7-8.77Z"/></svg>';
 const SYSTEM_SOUNDS_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7v4.2l-1.4 2.1A1 1 0 0 0 4.4 17h15.2a1 1 0 0 0 .8-1.7L19 13.2V9a7 7 0 0 0-7-7Zm0 20a3 3 0 0 0 2.82-2H9.18A3 3 0 0 0 12 22Z"/></svg>';
 const WHATSAPP_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="#25D366"/><path fill="#fff" d="M17.2 14.8c-.2-.1-1.4-.7-1.6-.7-.2-.1-.4-.1-.5.1-.2.2-.6.7-.8.8-.1.1-.3.1-.5 0-.2-.1-1-.4-1.9-1.2-.7-.6-1.1-1.3-1.3-1.5-.1-.2 0-.3.1-.4.1-.1.2-.3.3-.4.1-.1.1-.2.2-.4.1-.1 0-.3 0-.4 0-.1-.5-1.3-.7-1.7-.2-.5-.4-.4-.5-.4h-.4c-.1 0-.4.1-.5.3-.2.2-.7.7-.7 1.7s.7 2.1.8 2.2c.1.1 1.4 2.2 3.4 3 .5.2.9.4 1.2.5.5.1 1 .1 1.4.1.4-.1 1.4-.6 1.6-1.2.2-.6.2-1.1.1-1.2-.1 0-.3-.1-.5-.2Z"/></svg>';
 const APP_MIXER_SLOT_COUNT = 8;
+const MIXER_GENERIC_ICON_TOKENS = new Set(['chrome', 'msedge', 'edge', 'firefox', 'brave', 'opera', 'browser']);
+const MIXER_ICON_REFRESH_INTERVAL_MS = 2500;
+const MIXER_PROCESS_ICON_REFRESH_INTERVAL_MS = 1300;
+const MIXER_MEDIA_SERVICE_ICON_BY_TOKEN = Object.freeze({
+  youtube: 'https://www.google.com/s2/favicons?domain=youtube.com&sz=64',
+  'youtube-music': 'https://www.google.com/s2/favicons?domain=music.youtube.com&sz=64',
+});
 
 function refreshSlider(v) {
   if (!volSlider) return;
@@ -142,7 +151,9 @@ function animateAudioActivityFrame(nowMs) {
 }
 
 function applyAudioActivity(payload) {
-  speakerVuTarget = Math.max(0, Math.min(100, Number(payload && payload.speaker) || 0));
+  const speakerActivity = Math.max(0, Math.min(100, Number(payload && payload.speaker) || 0));
+  speakerVuTarget = speakerActivity;
+  const forceSilentApps = speakerActivity <= AUDIO_VU_SILENCE_FLOOR;
   const now = Date.now();
   const apps = payload && Array.isArray(payload.apps) ? payload.apps : [];
   apps.forEach(item => {
@@ -150,7 +161,8 @@ function applyAudioActivity(payload) {
     const pid = Number(item && item.processId);
     const validPid = Number.isFinite(pid) && pid > 0 ? pid : 0;
     if (!id && validPid <= 0) return;
-    const activity = Math.max(0, Math.min(100, Number(item && item.activity) || 0));
+    let activity = Math.max(0, Math.min(100, Number(item && item.activity) || 0));
+    if (forceSilentApps) activity = 0;
     if (id) {
       appVuTargets.set(id, activity);
       appVuSeenAtById.set(id, now);
@@ -366,21 +378,80 @@ function normalizeTitleToken(value) {
     .slice(0, 120);
 }
 
+function normalizeMixerHostToken(value) {
+  const token = canonicalMixerToken(value);
+  if (token === 'googlechrome') return 'chrome';
+  if (token === 'microsoftedge' || token === 'edge') return 'msedge';
+  return token;
+}
+
+function detectMediaServiceTokenFromText(value) {
+  const merged = String(value || '').toLowerCase();
+  if (!merged) return '';
+  if (/youtube\s*music|music\.youtube\.com|ytmusic|cinhimbn[a-z]*ghhklpknlkffjgod/.test(merged)) return 'youtube-music';
+  if (/youtube/.test(merged)) return 'youtube';
+  return '';
+}
+
+function detectMediaServiceTokenForApp(app, presentation) {
+  const token = String(presentation && presentation.iconToken || '').toLowerCase();
+  if (!MIXER_GENERIC_ICON_TOKENS.has(token)) return '';
+
+  if (mediaData && mediaData.active) {
+    const mediaSourceToken = normalizeMixerHostToken(mediaData.source || mediaData.app || '');
+    if (!mediaSourceToken || mediaSourceToken === token) {
+      const byMedia = detectMediaServiceTokenFromText(
+        `${String(mediaData.app || '')} ${String(mediaData.source || '')} ${String(mediaData.title || '')}`,
+      );
+      if (byMedia) return byMedia;
+    }
+  }
+
+  const fromAppTitle = detectMediaServiceTokenFromText(String(app && app.title || ''));
+  if (fromAppTitle) return fromAppTitle;
+
+  const appPid = Number(app && app.processId);
+  if (Number.isFinite(appPid) && appPid > 0) {
+    const pidTitleToken = mixerTitleTokenByPidCache.get(appPid) || '';
+    const fromPidTitle = detectMediaServiceTokenFromText(pidTitleToken);
+    if (fromPidTitle) return fromPidTitle;
+  }
+  return '';
+}
+
+function resolveBrowserMediaContext(app, presentation) {
+  const serviceToken = detectMediaServiceTokenForApp(app, presentation);
+  if (!serviceToken) return null;
+
+  if (serviceToken === 'youtube-music') {
+    return { displayName: 'YouTube Music', iconSrc: MIXER_MEDIA_SERVICE_ICON_BY_TOKEN['youtube-music'] || '' };
+  }
+  if (serviceToken === 'youtube') {
+    return { displayName: 'YouTube', iconSrc: MIXER_MEDIA_SERVICE_ICON_BY_TOKEN.youtube || '' };
+  }
+  return null;
+}
+
 function captureMixerIconsFromWindows(data) {
   const windows = data && Array.isArray(data.windows) ? data.windows : [];
+  const seenPids = new Set();
   windows.forEach(win => {
     const token = canonicalMixerToken(win && win.app);
     const icon = win && typeof win.icon === 'string' ? win.icon : '';
-    if (!icon) return;
-    if (token && !mixerIconCache.has(token)) mixerIconCache.set(token, icon);
     const pid = Number(win && win.processId);
+    if (Number.isFinite(pid) && pid > 0) seenPids.add(pid);
     if (Number.isFinite(pid) && pid > 0) {
-      mixerIconByPidCache.set(pid, icon);
+      const titleToken = normalizeTitleToken(win && win.title);
+      if (titleToken) mixerTitleTokenByPidCache.set(pid, titleToken);
     }
+    if (!icon) return;
+    if (token) mixerIconCache.set(token, icon);
+    if (Number.isFinite(pid) && pid > 0) mixerIconByPidCache.set(pid, icon);
     const titleToken = normalizeTitleToken(win && win.title);
-    if (titleToken && !mixerIconByTitleCache.has(titleToken)) {
-      mixerIconByTitleCache.set(titleToken, icon);
-    }
+    if (titleToken) mixerIconByTitleCache.set(titleToken, icon);
+  });
+  mixerTitleTokenByPidCache.forEach((_, pid) => {
+    if (!seenPids.has(pid)) mixerTitleTokenByPidCache.delete(pid);
   });
 }
 
@@ -390,7 +461,7 @@ function captureMixerIconsFromProcessList(data) {
     const pid = Number(item && item.processId);
     const icon = item && typeof item.icon === 'string' ? item.icon : '';
     if (!icon) return;
-    if (Number.isFinite(pid) && pid > 0 && !mixerIconByPidCache.has(pid)) {
+    if (Number.isFinite(pid) && pid > 0) {
       mixerIconByPidCache.set(pid, icon);
     }
   });
@@ -398,7 +469,7 @@ function captureMixerIconsFromProcessList(data) {
 
 function ensureMixerIcons(force = false) {
   const age = Date.now() - mixerIconLastFetchAt;
-  if (!force && (mixerIconFetchInFlight || age < 20000)) return;
+  if (!force && (mixerIconFetchInFlight || age < MIXER_ICON_REFRESH_INTERVAL_MS)) return;
   mixerIconFetchInFlight = fetch(SERVER + '/windows', { cache: 'no-store' })
     .then(res => (res.ok ? res.json() : null))
     .then(data => {
@@ -420,7 +491,7 @@ function ensureMixerProcessIcons(processIds, force = false) {
   if (!unresolved.length) return;
 
   const age = Date.now() - mixerProcessIconLastFetchAt;
-  if (!force && (mixerProcessIconFetchInFlight || age < 7000)) return;
+  if (!force && (mixerProcessIconFetchInFlight || age < MIXER_PROCESS_ICON_REFRESH_INTERVAL_MS)) return;
 
   const query = encodeURIComponent(unresolved.slice(0, 64).join(','));
   mixerProcessIconFetchInFlight = fetch(`${SERVER}/windows?icons=1&pids=${query}`, { cache: 'no-store' })
@@ -512,6 +583,10 @@ function renderAppMixer(rawApps) {
   apps.forEach(entry => {
     const app = entry.app;
     const presentation = entry.presentation;
+    const browserMediaContext = resolveBrowserMediaContext(app, presentation);
+    const presentationDisplayName = browserMediaContext && browserMediaContext.displayName
+      ? browserMediaContext.displayName
+      : presentation.displayName;
     const item = document.createElement('div');
     item.className = 'app-mixer-item';
     item.dataset.muted = app.muted ? 'true' : 'false';
@@ -571,7 +646,7 @@ function renderAppMixer(rawApps) {
 
     const icon = document.createElement('div');
     icon.className = 'app-mixer-appicon';
-    icon.title = presentation.displayName;
+    icon.title = presentationDisplayName;
     if (presentation.iconToken === 'whatsapp') {
       icon.innerHTML = WHATSAPP_ICON;
       item.append(value, muteBtn, sliderWrap, icon);
@@ -579,21 +654,43 @@ function renderAppMixer(rawApps) {
       return;
     }
     const iconByPid = app.processId > 0 ? (mixerIconByPidCache.get(app.processId) || '') : '';
-    const iconByToken = presentation.iconToken ? (mixerIconCache.get(presentation.iconToken) || '') : '';
-    const iconByTitle = normalizeTitleToken(app.title) ? (mixerIconByTitleCache.get(normalizeTitleToken(app.title)) || '') : '';
-    const iconSrc = iconByTitle || iconByPid || iconByToken;
+    const canUseTokenIcon = !!(presentation.iconToken && !MIXER_GENERIC_ICON_TOKENS.has(String(presentation.iconToken).toLowerCase()));
+    const iconByToken = canUseTokenIcon ? (mixerIconCache.get(presentation.iconToken) || '') : '';
+    const titleToken = normalizeTitleToken(app.title);
+    const iconByTitle = titleToken ? (mixerIconByTitleCache.get(titleToken) || '') : '';
+    const isGenericBrowserHost = MIXER_GENERIC_ICON_TOKENS.has(String(presentation.iconToken || '').toLowerCase());
+    const iconByMediaContext = browserMediaContext && browserMediaContext.iconSrc ? browserMediaContext.iconSrc : '';
+    const iconSrc = isGenericBrowserHost
+      ? (iconByMediaContext || iconByTitle || iconByPid || iconByToken)
+      : (iconByTitle || iconByPid || iconByToken);
     if (iconSrc) {
       const image = document.createElement('img');
       image.src = iconSrc;
       image.alt = '';
       image.loading = 'lazy';
+      image.onerror = () => {
+        image.onerror = null;
+        if (iconByTitle && image.src !== iconByTitle) {
+          image.src = iconByTitle;
+          return;
+        }
+        if (iconByPid && image.src !== iconByPid) {
+          image.src = iconByPid;
+          return;
+        }
+        if (iconByToken && image.src !== iconByToken) {
+          image.src = iconByToken;
+          return;
+        }
+        image.remove();
+      };
       icon.appendChild(image);
     } else if (isSystemSoundsToken(presentation.baseToken)) {
       icon.innerHTML = SYSTEM_SOUNDS_ICON;
     } else {
       missingIcon = true;
       if (app.processId > 0) unresolvedIconPids.push(app.processId);
-      icon.textContent = mixerIconToken(presentation.displayName);
+      icon.textContent = mixerIconToken(presentationDisplayName);
     }
 
     item.append(value, muteBtn, sliderWrap, icon);

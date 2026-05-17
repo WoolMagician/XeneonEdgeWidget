@@ -75,11 +75,15 @@ internal static class Program
                 case "activity":
                     return WriteActivityJson();
                 case "activity-stream":
-                    return WriteActivityStream(ParseOptionalInt(args, 1, 18));
+                    return WriteActivityStream(
+                        ParseOptionalInt(args, 1, 18),
+                        ParseOptionalInt(args, 2, -1));
                 case "media-info":
                     return WriteMediaInfoJson();
                 case "media-stream":
-                    return WriteMediaInfoStream(ParseOptionalInt(args, 1, 120));
+                    return WriteMediaInfoStream(
+                        ParseOptionalInt(args, 1, 120),
+                        ParseOptionalInt(args, 2, -1));
                 case "media-playpause":
                     return WriteMediaActionJson("playpause");
                 case "media-next":
@@ -276,11 +280,12 @@ internal static class Program
         return 0;
     }
 
-    private static int WriteActivityStream(int intervalMs)
+    private static int WriteActivityStream(int intervalMs, int parentPid = -1)
     {
         var delayMs = Math.Clamp(intervalMs, 10, 1000);
         while (true)
         {
+            if (!IsProcessAlive(parentPid)) return 0;
             AudioActivitySnapshot activity;
             try
             {
@@ -329,7 +334,7 @@ internal static class Program
         return 0;
     }
 
-    private static int WriteMediaInfoStream(int intervalMs)
+    private static int WriteMediaInfoStream(int intervalMs, int parentPid = -1)
     {
         var delayMs = Math.Clamp(intervalMs, 70, 500);
         string lastKey = string.Empty;
@@ -338,6 +343,7 @@ internal static class Program
 
         while (true)
         {
+            if (!IsProcessAlive(parentPid)) return 0;
             MediaInfoSnapshot snapshot;
             try
             {
@@ -763,7 +769,7 @@ internal static class Program
         var canPause = false;
         var canTogglePlayPause = false;
         double? playbackRate = null;
-        var app = GetMediaAppName(source, title, album);
+        var app = GetMediaAppName(source, title, artist, album);
 
         try
         {
@@ -964,11 +970,15 @@ internal static class Program
         return await tcs.Task.ConfigureAwait(false);
     }
 
-    private static string GetMediaAppName(string source, string title, string album)
+    private static string GetMediaAppName(string source, string title, string artist, string album)
     {
-        if (Regex.IsMatch($"{source} {title} {album}", "Jellyfin", RegexOptions.IgnoreCase)) return "Jellyfin";
+        if (Regex.IsMatch($"{source} {title} {artist} {album}", "Jellyfin", RegexOptions.IgnoreCase)) return "Jellyfin";
+        if (Regex.IsMatch($"{source} {title} {artist} {album}", "YouTube\\s*Music|music\\.youtube\\.com|ytmusic", RegexOptions.IgnoreCase))
+            return "YouTube Music";
+        if (Regex.IsMatch(source, "cinhimbn[a-z]*ghhklpknlkffjgod", RegexOptions.IgnoreCase))
+            return "YouTube Music";
         if (Regex.IsMatch(source, "Spotify", RegexOptions.IgnoreCase)) return "Spotify";
-        if (Regex.IsMatch($"{title} {album}", "YouTube", RegexOptions.IgnoreCase)) return "YouTube";
+        if (Regex.IsMatch($"{title} {artist} {album}", "YouTube", RegexOptions.IgnoreCase)) return "YouTube";
         if (Regex.IsMatch(source, "Chrome|MSEdge|Firefox|Brave|Opera", RegexOptions.IgnoreCase)) return "YouTube";
         if (Regex.IsMatch(source, "ZuneMusic|ZuneVideo|MicrosoftMediaPlayer|WindowsMediaPlayer", RegexOptions.IgnoreCase)) return "Lettore Multimediale";
         if (Regex.IsMatch(source, "Music", RegexOptions.IgnoreCase)) return "Music";
@@ -1658,6 +1668,20 @@ internal static class Program
         var raw = args[index]?.Trim();
         if (!long.TryParse(raw, out var parsed)) return fallback;
         return parsed;
+    }
+
+    private static bool IsProcessAlive(int pid)
+    {
+        if (pid <= 0) return true;
+        try
+        {
+            using var proc = Process.GetProcessById(pid);
+            return !proc.HasExited;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string NormalizeToken(string value)
