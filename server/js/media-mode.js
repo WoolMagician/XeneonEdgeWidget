@@ -3,6 +3,9 @@
 let mediaModeFrameUrl = '';
 let mediaModeLoaded = false;
 let mediaModePanelObserver = null;
+let mediaModeDockBlockUntil = 0;
+
+const MEDIA_MODE_DOCK_REOPEN_GUARD_MS = 450;
 
 function getMediaModeUrl() {
   const url = hubSettings && hubSettings.mediaMode ? hubSettings.mediaMode.url : '';
@@ -84,6 +87,8 @@ function syncMediaModeDockBounds() {
   const panel = $('media-panel');
   if (!overlay || !panel || !overlay.classList.contains('docked')) return;
   const rect = panel.getBoundingClientRect();
+  overlay.style.right = 'auto';
+  overlay.style.bottom = 'auto';
   overlay.style.left = `${Math.round(rect.left)}px`;
   overlay.style.top = `${Math.round(rect.top)}px`;
   overlay.style.width = `${Math.round(rect.width)}px`;
@@ -106,12 +111,24 @@ function ensureMediaModeFrameLoaded() {
 function hideMediaModeOverlay() {
   const overlay = getMediaModeOverlay();
   if (!overlay) return;
+  const wasDocked = overlay.classList.contains('docked');
+  if (wasDocked) {
+    // Prevent a docked→fullscreen flash while opacity transitions to 0.
+    overlay.style.transition = 'none';
+  }
   overlay.classList.remove('active', 'fullscreen', 'docked');
   overlay.setAttribute('aria-hidden', 'true');
+  overlay.style.removeProperty('right');
+  overlay.style.removeProperty('bottom');
   overlay.style.removeProperty('left');
   overlay.style.removeProperty('top');
   overlay.style.removeProperty('width');
   overlay.style.removeProperty('height');
+  if (wasDocked) {
+    // Force style commit before restoring default transition rules.
+    void overlay.offsetWidth;
+    overlay.style.removeProperty('transition');
+  }
   document.body.classList.remove('media-mode-active');
 }
 
@@ -119,9 +136,11 @@ function showMediaModeFullscreen() {
   const overlay = getMediaModeOverlay();
   if (!overlay) return;
   ensureMediaModeFrameLoaded();
-  overlay.classList.add('active', 'fullscreen');
   overlay.classList.remove('docked');
+  overlay.classList.add('fullscreen', 'active');
   overlay.setAttribute('aria-hidden', 'false');
+  overlay.style.removeProperty('right');
+  overlay.style.removeProperty('bottom');
   overlay.style.removeProperty('left');
   overlay.style.removeProperty('top');
   overlay.style.removeProperty('width');
@@ -137,21 +156,30 @@ function showMediaModeDocked() {
     hideMediaModeOverlay();
     return;
   }
-  overlay.classList.add('active', 'docked');
   overlay.classList.remove('fullscreen');
+  overlay.classList.add('docked');
   overlay.setAttribute('aria-hidden', 'false');
   document.body.classList.remove('media-mode-active');
   syncMediaModeDockBounds();
+  overlay.classList.add('active');
   syncMediaModeOverlayContent();
 }
 
 function syncMediaModeFromPlayback(data) {
   if (isMediaModeFullscreen()) return;
-  if (shouldDockForMedia(data)) {
+  const now = Date.now();
+  const wantDock = shouldDockForMedia(data);
+
+  if (wantDock) {
+    if (!isMediaModeDocked() && now < mediaModeDockBlockUntil) return;
     showMediaModeDocked();
-  } else if (isMediaModeDocked()) {
-    hideMediaModeOverlay();
+    return;
   }
+
+  const status = normalizeMediaToken(data && data.playbackStatus);
+  const isPlayingNonJellyfin = status === 'playing' && !isJellyfinLikeSession(data);
+  if (isPlayingNonJellyfin) mediaModeDockBlockUntil = now + MEDIA_MODE_DOCK_REOPEN_GUARD_MS;
+  if (isMediaModeDocked()) hideMediaModeOverlay();
 }
 
 function toggleMediaMode(forceOpen) {

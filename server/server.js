@@ -240,6 +240,8 @@ let micAudioOverride = { volume: null, muted: null, expiresAt: 0 };
 const appAudioOverrides = new Map();
 let lastAudioInfoSnapshot = null;
 let lastAudioInfoUpdatedAt = 0;
+let lastAudioCtlRawSnapshot = null;
+let lastAudioCtlRawUpdatedAt = 0;
 let audioActivityCache = { speaker: 0, apps: [], updatedAt: 0 };
 let audioActivitySampleInFlight = false;
 let audioActivityStreamProcess = null;
@@ -2986,8 +2988,16 @@ async function getMediaInfo(force = false) {
       const cachedAudioFallback = buildMediaFallbackFromAudioApps(
         lastAudioInfoSnapshot && lastAudioInfoSnapshot.apps,
         'Media session temporarily unavailable',
+        windowAppsCache && Array.isArray(windowAppsCache.apps) ? windowAppsCache.apps : [],
       );
-      const fastFallback = cachedAudioFallback || mediaCache.data || unavailableMediaFallback('Media session temporarily unavailable');
+      const cachedWindowFallback = buildMediaFallbackFromWindowApps(
+        windowAppsCache && Array.isArray(windowAppsCache.apps) ? windowAppsCache.apps : [],
+        'Media session temporarily unavailable',
+      );
+      const fastFallback = cachedAudioFallback
+        || cachedWindowFallback
+        || mediaCache.data
+        || unavailableMediaFallback('Media session temporarily unavailable');
       const hydratedFastFallback = await hydrateArtwork(fastFallback);
       let resolvedFastFallback = stabilizeLiveMediaPosition(hydratedFastFallback);
       if (shouldHoldPreviousMediaSnapshot(resolvedFastFallback, previousData, previousAgeMs)) {
@@ -3054,9 +3064,80 @@ function unavailableMediaFallback(error) {
   return { active: false, app: '', source: '', title: '', artist: '', album: '', playbackStatus: 'Unavailable', thumbnail: null, position: 0, duration: 0, error };
 }
 
-function buildMediaFallbackFromAudioApps(apps, error) {
+function collectJellyfinWindowTokens(windowApps) {
+  if (!Array.isArray(windowApps) || windowApps.length === 0) return new Set();
+  const tokens = new Set();
+  windowApps.forEach(item => {
+    const processName = String(item && item.processName || '').trim();
+    const token = normalizeProcessToken(String(item && item.token || processName));
+    const name = String(item && item.name || '').trim();
+    const title = String(item && item.title || '').trim();
+    if (!token) return;
+    if (/jellyfin/i.test(`${processName} ${name} ${title}`)) tokens.add(token);
+  });
+  return tokens;
+}
+
+function isBrowserHostToken(value) {
+  return /^(chrome|googlechrome|msedge|microsoftedge|edge|firefox|brave|opera|browser|msedgewebview2|microsoftedgewebview2)$/i.test(String(value || ''));
+}
+
+function mediaModeUrlFromSettings(settings) {
+  const value = settings && settings.mediaMode ? settings.mediaMode.url : '';
+  return String(value || '').trim();
+}
+
+function hasConfiguredMediaModeUrl(value) {
+  const url = String(value || '').trim();
+  return /^https?:\/\//i.test(url);
+}
+
+function hasActiveQtWebEngineSession(rawSnapshot) {
+  if (!rawSnapshot || typeof rawSnapshot !== 'object') return false;
+  const rawApps = Array.isArray(rawSnapshot.apps) ? rawSnapshot.apps : [];
+  return rawApps.some(entry => {
+    const id = String(entry && entry.id || '');
+    const name = String(entry && entry.name || '');
+    const label = String(entry && entry.label || '');
+    const tokenSource = (id || name || label).replace(/\//g, '\\');
+    const base = path.win32.basename(tokenSource).toLowerCase();
+    const combined = `${base} ${id} ${name} ${label}`.toLowerCase();
+    if (!/qtwebengineprocess(?:\.exe)?/.test(combined)) return false;
+    return String(entry && entry.state || '').trim().toLowerCase() === 'active';
+  });
+}
+
+function buildMediaFallbackFromEmbeddedSession(rawSnapshot, mediaModeUrl, error) {
+  const url = String(mediaModeUrl || '').trim();
+  if (!hasConfiguredMediaModeUrl(url)) return null;
+  if (!hasActiveQtWebEngineSession(rawSnapshot)) return null;
+
+  let title = 'Jellyfin attivo';
+  try {
+    const parsed = new URL(url);
+    if (parsed && parsed.hostname) title = `Jellyfin su ${parsed.hostname}`;
+  } catch {}
+
+  return {
+    active: true,
+    app: 'Jellyfin',
+    source: 'Jellyfin',
+    title,
+    artist: '',
+    album: '',
+    playbackStatus: 'Unknown',
+    thumbnail: null,
+    position: 0,
+    duration: 0,
+    fallback: true,
+    error,
+  };
+}
+
+function buildMediaFallbackFromAudioApps(apps, error, windowApps = null) {
   if (!Array.isArray(apps) || apps.length === 0) return null;
   const isMediaLike = value => /spotify|chrome|edge|firefox|brave|opera|browser|youtube|jellyfin|vlc|mpv|netflix|prime video|disney/i.test(String(value || ''));
+  const jellyfinWindowTokens = collectJellyfinWindowTokens(windowApps);
 
   const candidates = apps
     .map(app => ({
@@ -3073,18 +3154,30 @@ function buildMediaFallbackFromAudioApps(apps, error) {
 
   const scored = candidates.map(app => {
     const merged = `${app.id} ${app.name} ${app.label} ${app.title}`;
+    const mergedTokens = [
+      normalizeProcessToken(app.id),
+      normalizeProcessToken(app.name),
+      normalizeProcessToken(app.label),
+    ].filter(Boolean);
+    const explicitJellyfin = /jellyfin/i.test(merged);
+    const jellyfinByBrowserWindow = !explicitJellyfin
+      && mergedTokens.some(token => isBrowserHostToken(token))
+      && mergedTokens.some(token => jellyfinWindowTokens.has(token));
     const score =
       (app.state === 'Active' ? 100 : 0)
       + (app.title ? 20 : 0)
-      + (isMediaLike(merged) ? 15 : 0);
-    return { app, score };
+      + (isMediaLike(merged) ? 15 : 0)
+      + (explicitJellyfin ? 260 : 0)
+      + (jellyfinByBrowserWindow ? 220 : 0);
+    return { app, score, explicitJellyfin, jellyfinByBrowserWindow };
   }).sort((left, right) => right.score - left.score);
 
-  const selected = scored[0] ? scored[0].app : null;
-  if (!selected || scored[0].score <= 0) return null;
+  const best = scored[0] || null;
+  const selected = best ? best.app : null;
+  if (!best || !selected || best.score <= 0) return null;
 
   const sourceName = selected.label || selected.name || selected.id || 'Media';
-  const appName = /jellyfin/i.test(`${selected.id} ${selected.name} ${selected.label} ${selected.title}`)
+  const appName = (best.explicitJellyfin || best.jellyfinByBrowserWindow)
     ? 'Jellyfin'
     : displayAppName(sourceName);
   const rawTitle = selected.title || selected.name || selected.label || sourceName || 'Media attivo';
@@ -3106,15 +3199,76 @@ function buildMediaFallbackFromAudioApps(apps, error) {
   };
 }
 
+function buildMediaFallbackFromWindowApps(windowApps, error) {
+  if (!Array.isArray(windowApps) || windowApps.length === 0) return null;
+  const candidates = windowApps
+    .map(item => ({
+      processName: String(item && item.processName || '').trim(),
+      token: normalizeProcessToken(String(item && item.token || item && item.processName || '')),
+      name: String(item && item.name || '').trim(),
+      title: String(item && item.title || '').trim(),
+    }))
+    .filter(item => item.token || item.name || item.title)
+    .filter(item => /jellyfin/i.test(`${item.processName} ${item.name} ${item.title}`));
+
+  if (!candidates.length) return null;
+
+  const selected = candidates.sort((left, right) => {
+    const leftScore = (left.title ? 20 : 0) + (/jellyfin/i.test(left.title) ? 40 : 0);
+    const rightScore = (right.title ? 20 : 0) + (/jellyfin/i.test(right.title) ? 40 : 0);
+    return rightScore - leftScore;
+  })[0];
+
+  const rawTitle = selected.title || selected.name || selected.processName || 'Jellyfin attivo';
+  const split = splitMediaTitle(rawTitle, 'Jellyfin');
+  return {
+    active: true,
+    app: 'Jellyfin',
+    source: 'Jellyfin',
+    title: split.title || rawTitle,
+    artist: split.artist || '',
+    album: '',
+    playbackStatus: 'Unknown',
+    thumbnail: null,
+    position: 0,
+    duration: 0,
+    fallback: true,
+    error,
+  };
+}
+
 async function getMediaFallback(error) {
+  let windowApps = [];
   try {
-    const audioSnapshot = await getAudioInfoFromAudioCtl();
-    const fromAudioCtl = buildMediaFallbackFromAudioApps(audioSnapshot && audioSnapshot.apps, error);
-    if (fromAudioCtl) return fromAudioCtl;
+    windowApps = await getRunningWindowApps();
   } catch {}
 
-  const fromCachedAudio = buildMediaFallbackFromAudioApps(lastAudioInfoSnapshot && lastAudioInfoSnapshot.apps, error);
+  let mediaModeUrl = '';
+  try {
+    const settings = await readHubSettings();
+    mediaModeUrl = mediaModeUrlFromSettings(settings);
+  } catch {}
+
+  try {
+    const audioSnapshot = await getAudioInfoFromAudioCtl();
+    const fromAudioCtl = buildMediaFallbackFromAudioApps(audioSnapshot && audioSnapshot.apps, error, windowApps);
+    if (fromAudioCtl) return fromAudioCtl;
+    if ((Date.now() - Number(lastAudioCtlRawUpdatedAt || 0)) <= 15000) {
+      const fromEmbedded = buildMediaFallbackFromEmbeddedSession(lastAudioCtlRawSnapshot, mediaModeUrl, error);
+      if (fromEmbedded) return fromEmbedded;
+    }
+  } catch {}
+
+  const fromCachedAudio = buildMediaFallbackFromAudioApps(lastAudioInfoSnapshot && lastAudioInfoSnapshot.apps, error, windowApps);
   if (fromCachedAudio) return fromCachedAudio;
+
+  if ((Date.now() - Number(lastAudioCtlRawUpdatedAt || 0)) <= 15000) {
+    const fromEmbeddedCached = buildMediaFallbackFromEmbeddedSession(lastAudioCtlRawSnapshot, mediaModeUrl, error);
+    if (fromEmbeddedCached) return fromEmbeddedCached;
+  }
+
+  const fromWindows = buildMediaFallbackFromWindowApps(windowApps, error);
+  if (fromWindows) return fromWindows;
 
   return unavailableMediaFallback(error);
 }
@@ -3421,6 +3575,8 @@ async function getAudioInfoFromAudioCtl() {
   const result = await runAudioCtlJson(['snapshot'], 3200);
   if (!result.ok || !result.data) return null;
   try {
+    lastAudioCtlRawSnapshot = result.data;
+    lastAudioCtlRawUpdatedAt = Date.now();
     const transformed = buildAudioInfoFromAudioCtlSnapshot(result.data);
     if (transformed) {
       lastAudioInfoSnapshot = transformed;
