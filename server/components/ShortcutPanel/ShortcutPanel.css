@@ -1,5 +1,6 @@
 .shortcut-panel {
   position: relative;
+  container-type: size;
   overflow: hidden;
   padding: 10px;
   background:
@@ -32,12 +33,29 @@ body:not([data-panel]) .center-column > .shortcut-panel::before {
 .shortcut-grid {
   position: relative;
   z-index: 1;
+  --hero-ring-border-alpha: 0.44;
+  --hero-ring-bg-alpha: 0.1;
+  --hero-ring-inner-alpha: 0.06;
+  --hero-ring2-inset: -3px;
+  --hero-ring2-primary-alpha: 0.95;
+  --hero-ring2-secondary-alpha: 0.52;
+  --hero-ring2-opacity: 0.58;
+  --hero-glow-inset: 22px;
+  --hero-glow-bg-alpha: 0.16;
+  --hero-glow-blur: 12px;
+  --hero-glow-opacity: 0.42;
+  --shortcut-hero-wrap-size: clamp(62px, min(44cqi, 44cqh), 132px);
+  --shortcut-hero-core-size: clamp(46px, min(32cqi, 32cqh), 98px);
+  --shortcut-hero-icon-size: clamp(20px, min(12cqi, 12cqh), 36px);
   width: 100%;
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   grid-template-rows: repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    "action jellyfin mic"
+    "counter counter counter";
   gap: 6px;
 }
 
@@ -45,12 +63,26 @@ body:not([data-panel]) .center-column > .shortcut-panel::before {
 .shortcut-mic-tile,
 .shortcut-jellyfin-tile,
 .shortcut-spare-tile {
+  container-type: size;
   border: 1px solid rgba(255,255,255,0.1);
   border-radius: 12px;
   background: rgba(8, 12, 12, 0.62);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
   min-width: 0;
   min-height: 0;
+}
+
+.shortcut-action-tile { grid-area: action; }
+.shortcut-jellyfin-tile { grid-area: jellyfin; }
+.shortcut-mic-tile { grid-area: mic; }
+.shortcut-spare-tile { grid-area: counter; }
+
+.shortcut-action-tile,
+.shortcut-mic-tile,
+.shortcut-jellyfin-tile {
+  --shortcut-hero-wrap-size: clamp(74px, min(88cqi, 88cqh), 156px);
+  --shortcut-hero-core-size: clamp(62px, min(71cqi, 71cqh), 126px);
+  --shortcut-hero-icon-size: clamp(25px, min(25cqi, 25cqh), 45px);
 }
 
 body:not([data-panel]) .center-column > .shortcut-panel .shortcut-action-tile,
@@ -67,7 +99,7 @@ body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
 .shortcut-action-tile {
   --shortcut-primary: #0478ED;
   --shortcut-primary-rgb: 4, 120, 237;
-  padding: 8px;
+  padding: 3px;
   display: grid;
   grid-template-rows: 1fr;
   justify-items: center;
@@ -99,8 +131,9 @@ body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
 
 .shortcut-btn-wrap {
   position: relative;
-  width: clamp(80px, 24cqh, 118px);
-  height: clamp(80px, 24cqh, 118px);
+  width: min(var(--shortcut-hero-wrap-size), calc(100cqi - 6px), calc(100cqh - 6px));
+  aspect-ratio: 1 / 1;
+  height: auto;
   display: grid;
   place-items: center;
 }
@@ -115,36 +148,37 @@ body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
 
 .shortcut-ring {
   inset: 2px;
-  border: 1px solid rgba(var(--shortcut-primary-rgb),0.34);
-  background: rgba(var(--shortcut-primary-rgb),0.06);
-  box-shadow: inset 0 0 0 8px rgba(var(--shortcut-primary-rgb),0.04);
+  border: 1px solid rgba(var(--shortcut-primary-rgb),var(--hero-ring-border-alpha));
+  background: rgba(var(--shortcut-primary-rgb),var(--hero-ring-bg-alpha));
+  box-shadow: inset 0 0 0 8px rgba(var(--shortcut-primary-rgb),var(--hero-ring-inner-alpha));
 }
 
 .shortcut-ring2 {
-  inset: -7px;
+  inset: var(--hero-ring2-inset);
   padding: 1px;
   border: 0;
-  background: conic-gradient(from 90deg, transparent 0 24%, rgba(var(--shortcut-primary-rgb),0.84) 32%, transparent 42% 62%, rgba(var(--shortcut-primary-rgb),0.48) 72%, transparent 82% 100%);
+  background: conic-gradient(from 90deg, transparent 0 24%, rgba(var(--shortcut-primary-rgb),var(--hero-ring2-primary-alpha)) 32%, transparent 42% 62%, rgba(var(--shortcut-primary-rgb),var(--hero-ring2-secondary-alpha)) 72%, transparent 82% 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
-  opacity: 0.78;
+  opacity: var(--hero-ring2-opacity);
   animation: shortcut-orbit 7s linear infinite;
 }
 
 .shortcut-glow {
-  inset: 14px;
-  background: rgba(var(--shortcut-primary-rgb),0.2);
-  filter: blur(18px);
-  opacity: 0.7;
+  inset: var(--hero-glow-inset);
+  background: rgba(var(--shortcut-primary-rgb),var(--hero-glow-bg-alpha));
+  filter: blur(var(--hero-glow-blur));
+  opacity: var(--hero-glow-opacity);
 }
 
 .shortcut-btn {
   position: relative;
   z-index: 1;
-  width: clamp(60px, 18cqh, 86px);
-  height: clamp(60px, 18cqh, 86px);
+  width: var(--shortcut-hero-core-size);
+  aspect-ratio: 1 / 1;
+  height: auto;
   border-radius: 50%;
   border: 1px solid rgba(255,255,255,0.12);
   cursor: pointer;
@@ -156,8 +190,8 @@ body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
 }
 
 .shortcut-btn svg {
-  width: clamp(23px, 7cqh, 32px);
-  height: clamp(23px, 7cqh, 32px);
+  width: var(--shortcut-hero-icon-size);
+  height: var(--shortcut-hero-icon-size);
   fill: #fff;
   filter: drop-shadow(0 1px 4px rgba(0,0,0,0.34));
 }
@@ -173,7 +207,7 @@ body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
 }
 
 .shortcut-mic-tile {
-  padding: 8px;
+  padding: 3px;
   display: grid;
   grid-template-rows: 1fr;
   justify-items: center;
@@ -199,58 +233,71 @@ body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
 
 .shortcut-mic-tile .btn-wrap {
   grid-area: auto;
-  width: clamp(82px, 24cqh, 118px);
-  height: clamp(82px, 24cqh, 118px);
+  width: min(var(--shortcut-hero-wrap-size), calc(100cqi - 6px), calc(100cqh - 6px));
+  aspect-ratio: 1 / 1;
+  height: auto;
   margin: 0 auto;
   justify-self: center;
   align-self: center;
 }
 
 .shortcut-mic-tile .mic-btn {
-  width: clamp(60px, 18cqh, 86px);
-  height: clamp(60px, 18cqh, 86px);
+  width: var(--shortcut-hero-core-size);
+  aspect-ratio: 1 / 1;
+  height: auto;
 }
 
 .shortcut-mic-tile .mic-btn svg {
-  width: clamp(23px, 7cqh, 32px);
-  height: clamp(23px, 7cqh, 32px);
+  width: var(--shortcut-hero-icon-size);
+  height: var(--shortcut-hero-icon-size);
+}
+
+.shortcut-mic-tile .ring2 {
+  inset: var(--hero-ring2-inset);
+  opacity: var(--hero-ring2-opacity);
+}
+
+.shortcut-mic-tile .glow {
+  inset: var(--hero-glow-inset);
+  filter: blur(var(--hero-glow-blur));
+  opacity: var(--hero-glow-opacity);
 }
 
 /* Force unmuted mic orbit/glow to green in this panel (muted stays red). */
 .shortcut-mic-tile .ring.active {
-  border-color: rgba(30,215,96,0.34);
-  background: rgba(30,215,96,0.035);
-  box-shadow: inset 0 0 0 8px rgba(30,215,96,0.035);
+  border-color: rgba(30,215,96,var(--hero-ring-border-alpha));
+  background: rgba(30,215,96,var(--hero-ring-bg-alpha));
+  box-shadow: inset 0 0 0 8px rgba(30,215,96,var(--hero-ring-inner-alpha));
 }
 
 .shortcut-mic-tile .ring2.active {
-  background: conic-gradient(from 90deg, transparent 0 24%, rgba(30,215,96,0.80) 32%, transparent 42% 62%, rgba(30,215,96,0.45) 72%, transparent 82% 100%);
+  background: conic-gradient(from 90deg, transparent 0 24%, rgba(30,215,96,var(--hero-ring2-primary-alpha)) 32%, transparent 42% 62%, rgba(30,215,96,var(--hero-ring2-secondary-alpha)) 72%, transparent 82% 100%);
 }
 
 .shortcut-mic-tile .glow.active {
-  background: rgba(30,215,96,0.14);
-  opacity: 0.7;
+  background: rgba(30,215,96,var(--hero-glow-bg-alpha));
+  opacity: var(--hero-glow-opacity);
 }
 
 .shortcut-mic-tile .ring.muted {
-  border-color: rgba(229,57,53,0.34);
-  background: rgba(229,57,53,0.035);
-  box-shadow: inset 0 0 0 8px rgba(229,57,53,0.03);
+  border-color: rgba(229,57,53,var(--hero-ring-border-alpha));
+  background: rgba(229,57,53,var(--hero-ring-bg-alpha));
+  box-shadow: inset 0 0 0 8px rgba(229,57,53,var(--hero-ring-inner-alpha));
 }
 
 .shortcut-mic-tile .ring2.muted {
-  background: conic-gradient(from 90deg, transparent 0 24%, rgba(229,57,53,0.82) 32%, transparent 42% 62%, rgba(229,57,53,0.46) 72%, transparent 82% 100%);
+  background: conic-gradient(from 90deg, transparent 0 24%, rgba(229,57,53,var(--hero-ring2-primary-alpha)) 32%, transparent 42% 62%, rgba(229,57,53,var(--hero-ring2-secondary-alpha)) 72%, transparent 82% 100%);
 }
 
 .shortcut-mic-tile .glow.muted {
-  background: rgba(229,57,53,0.15);
-  opacity: 0.62;
+  background: rgba(229,57,53,var(--hero-glow-bg-alpha));
+  opacity: var(--hero-glow-opacity);
 }
 
 .shortcut-jellyfin-tile {
   appearance: none;
   cursor: pointer;
-  padding: 8px;
+  padding: 3px;
   display: grid;
   place-items: center;
   transition: transform 0.12s ease, border-color 0.18s ease, background 0.18s ease;
@@ -259,8 +306,9 @@ body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
 .shortcut-jellyfin-wrap {
   --jf-rgb: 170, 110, 255;
   position: relative;
-  width: clamp(80px, 24cqh, 118px);
-  height: clamp(80px, 24cqh, 118px);
+  width: min(var(--shortcut-hero-wrap-size), calc(100cqi - 6px), calc(100cqh - 6px));
+  aspect-ratio: 1 / 1;
+  height: auto;
   display: grid;
   place-items: center;
 }
@@ -275,37 +323,38 @@ body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
 
 .shortcut-jellyfin-ring {
   inset: 2px;
-  border: 1px solid rgba(var(--jf-rgb),0.52);
-  background: rgba(var(--jf-rgb),0.12);
-  box-shadow: inset 0 0 0 8px rgba(var(--jf-rgb),0.085);
+  border: 1px solid rgba(var(--jf-rgb),var(--hero-ring-border-alpha));
+  background: rgba(var(--jf-rgb),var(--hero-ring-bg-alpha));
+  box-shadow: inset 0 0 0 8px rgba(var(--jf-rgb),var(--hero-ring-inner-alpha));
 }
 
 .shortcut-jellyfin-ring2 {
-  inset: -7px;
+  inset: var(--hero-ring2-inset);
   padding: 1px;
   border: 0;
-  background: conic-gradient(from 90deg, transparent 0 24%, rgba(var(--jf-rgb),1) 32%, transparent 42% 62%, rgba(var(--jf-rgb),0.78) 72%, transparent 82% 100%);
+  background: conic-gradient(from 90deg, transparent 0 24%, rgba(var(--jf-rgb),var(--hero-ring2-primary-alpha)) 32%, transparent 42% 62%, rgba(var(--jf-rgb),var(--hero-ring2-secondary-alpha)) 72%, transparent 82% 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
-  opacity: 1;
+  opacity: var(--hero-ring2-opacity);
   animation: shortcut-orbit 7s linear infinite;
   will-change: transform;
 }
 
 .shortcut-jellyfin-glow {
-  inset: 14px;
-  background: rgba(var(--jf-rgb),0.36);
-  filter: blur(18px);
-  opacity: 1;
+  inset: var(--hero-glow-inset);
+  background: rgba(var(--jf-rgb),var(--hero-glow-bg-alpha));
+  filter: blur(var(--hero-glow-blur));
+  opacity: var(--hero-glow-opacity);
 }
 
 .shortcut-jellyfin-core {
   position: relative;
   z-index: 1;
-  width: clamp(60px, 18cqh, 86px);
-  height: clamp(60px, 18cqh, 86px);
+  width: var(--shortcut-hero-core-size);
+  aspect-ratio: 1 / 1;
+  height: auto;
   border-radius: 50%;
   border: 1px solid rgba(255,255,255,0.14);
   display: grid;
@@ -315,8 +364,8 @@ body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
 }
 
 .shortcut-jellyfin-icon {
-  width: clamp(26px, 7.4cqh, 36px);
-  height: clamp(26px, 7.4cqh, 36px);
+  width: var(--shortcut-hero-icon-size);
+  height: var(--shortcut-hero-icon-size);
   object-fit: contain;
   display: block;
   filter: brightness(1.24) saturate(1.04) drop-shadow(0 1px 4px rgba(0,0,0,0.45));
@@ -340,16 +389,16 @@ body:not([data-panel]) .center-column > .shortcut-panel .shortcut-spare-tile {
 }
 
 .shortcut-jellyfin-tile.active .shortcut-jellyfin-ring {
-  border-color: rgba(170,110,255,0.46);
-  background: rgba(170,110,255,0.07);
+  border-color: rgba(170,110,255,0.44);
+  background: rgba(170,110,255,0.1);
 }
 
 .shortcut-jellyfin-tile.active .shortcut-jellyfin-ring2 {
-  opacity: 0.95;
+  opacity: var(--hero-ring2-opacity);
 }
 
 .shortcut-jellyfin-tile.active .shortcut-jellyfin-glow {
-  opacity: 0.9;
+  opacity: var(--hero-glow-opacity);
 }
 
 .shortcut-jellyfin-tile:focus-visible {

@@ -184,6 +184,31 @@ const i18n = {
     task_recur_never: 'Mai', task_recur_daily: 'Ogni giorno', task_recur_weekly: 'Ogni settimana', task_recur_custom: 'Personalizzato',
     tasks_recur_days_label: 'giorni', tasks_recur_days_tip: 'Si ripete ogni N giorni',
     task_tick: 'Completato', task_undo: 'Riapri', task_delete: 'Elimina',
+    counter_toggle: 'Avvia o ferma timer',
+    counter_history_open: 'Apri storico ore',
+    counter_history: 'Storico ore',
+    counter_last_30_days: 'Ultimi 30 giorni',
+    counter_today_kicker: 'Ore oggi',
+    counter_today_sum: 'Totale oggi',
+    counter_30d_sum: 'Totale 30 giorni',
+    counter_running: 'In corso',
+    counter_idle: 'Fermo',
+    counter_session: 'Sessione',
+    counter_stop: 'Ferma',
+    counter_save: 'Salva',
+    counter_delete: 'Rimuovi',
+    counter_reset_day: 'Reset giorno',
+    counter_reset_all: 'Reset totale',
+    counter_empty: 'Nessuna attività negli ultimi 30 giorni',
+    counter_day_empty: 'Nessuna sessione',
+    counter_confirm_delete: 'Vuoi eliminare questa sessione?',
+    counter_confirm_reset_day: 'Vuoi azzerare tutte le sessioni di questo giorno?',
+    counter_confirm_reset_all: 'Vuoi azzerare tutte le sessioni?',
+    counter_invalid_range: 'Intervallo sessione non valido',
+    counter_delete_failed: 'Impossibile eliminare la sessione',
+    counter_reset_failed: 'Impossibile completare il reset',
+    counter_threshold_kicker: 'Soglia raggiunta',
+    counter_threshold_title: 'Hai superato 6 ore oggi',
     settings_saved: 'Preferenze salvate', settings_persist_note: 'Le preferenze restano salvate su questo PC.',
     settings_reset: 'Ripristina default', settings_reset_done: 'Aspetto ripristinato'
   },
@@ -370,6 +395,31 @@ const i18n = {
     task_recur_never: 'Never', task_recur_daily: 'Daily', task_recur_weekly: 'Weekly', task_recur_custom: 'Custom',
     tasks_recur_days_label: 'days', tasks_recur_days_tip: 'Repeats every N days',
     task_tick: 'Complete', task_undo: 'Reopen', task_delete: 'Delete',
+    counter_toggle: 'Start or stop timer',
+    counter_history_open: 'Open time history',
+    counter_history: 'Time history',
+    counter_last_30_days: 'Last 30 days',
+    counter_today_kicker: 'Today hours',
+    counter_today_sum: 'Today total',
+    counter_30d_sum: '30-day total',
+    counter_running: 'Running',
+    counter_idle: 'Stopped',
+    counter_session: 'Session',
+    counter_stop: 'Stop',
+    counter_save: 'Save',
+    counter_delete: 'Remove',
+    counter_reset_day: 'Reset day',
+    counter_reset_all: 'Reset all',
+    counter_empty: 'No activity in the last 30 days',
+    counter_day_empty: 'No sessions',
+    counter_confirm_delete: 'Delete this session?',
+    counter_confirm_reset_day: 'Reset all sessions for this day?',
+    counter_confirm_reset_all: 'Reset all sessions?',
+    counter_invalid_range: 'Invalid session range',
+    counter_delete_failed: 'Unable to delete session',
+    counter_reset_failed: 'Unable to reset sessions',
+    counter_threshold_kicker: 'Threshold reached',
+    counter_threshold_title: 'You passed 6 hours today',
     settings_saved: 'Preferences saved', settings_persist_note: 'Preferences stay saved on this PC.',
     settings_reset: 'Reset defaults', settings_reset_done: 'Appearance reset'
   }
@@ -419,6 +469,8 @@ function applyTranslations() {
   if (typeof renderNewsTicker === 'function') renderNewsTicker();
   if ($('lockscreen-overlay') && !$('lockscreen-overlay').hidden && typeof renderLockScreen === 'function') renderLockScreen();
   if (typeof renderTasks === 'function') renderTasks();
+  if (typeof renderHourCounter === 'function') renderHourCounter();
+  if (typeof renderHourCounterOverlay === 'function') renderHourCounterOverlay();
 }
 
 function setLang(l) {

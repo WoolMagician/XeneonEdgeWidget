@@ -21,6 +21,7 @@ const SHORTCUT_SCRIPT = path.join(__dirname, 'shortcut.ps1');
 const NOTES_FILE = path.join(__dirname, 'notes.txt');
 const EVENTS_FILE = path.join(__dirname, 'events.json');
 const TASKS_FILE = path.join(__dirname, 'tasks.json');
+const COUNTER_FILE = path.join(__dirname, 'counter.json');
 const TASKS_MAX = 100;
 const SETTINGS_FILE = path.join(__dirname, 'settings.json');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
@@ -42,6 +43,8 @@ const CALENDAR_SYNC_WINDOW_DAYS_FUTURE = 365;
 const CALENDAR_SYNC_MAX_OCCURRENCES = 2000;
 const CALENDAR_HOLIDAY_FEED_URL = 'https://calendar.google.com/calendar/ical/it.italian%23holiday%40group.v.calendar.google.com/public/basic.ics';
 const CALENDAR_HOLIDAY_REFRESH_MS = 12 * 60 * 60 * 1000;
+const COUNTER_HISTORY_DAYS_MAX = 30;
+const COUNTER_MAX_SESSIONS = 5000;
 const NEWS_SOURCE_DOMAIN_OVERRIDES = new Map([
   ['ansa', 'ansa.it'],
   ['ansait', 'ansa.it'],
@@ -4595,6 +4598,337 @@ async function writeTasks(tasks) {
   return safe;
 }
 
+function createCounterSessionId() {
+  return String(`counter-${Date.now()}-${Math.random().toString(16).slice(2)}`).slice(0, 80);
+}
+
+function normalizeCounterSession(session) {
+  const source = session && typeof session === 'object' ? session : {};
+  const id = String(source.id || createCounterSessionId()).slice(0, 80);
+  const startMs = Date.parse(String(source.startAt || '').trim());
+  const endMs = Date.parse(String(source.endAt || '').trim());
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  return {
+    id,
+    startAt: toLocalDateTimeString(new Date(startMs)),
+    endAt: toLocalDateTimeString(new Date(endMs)),
+    createdAt: source.createdAt ? String(source.createdAt).slice(0, 40) : new Date().toISOString(),
+    updatedAt: source.updatedAt ? String(source.updatedAt).slice(0, 40) : new Date().toISOString(),
+  };
+}
+
+function normalizeCounterActiveSession(active) {
+  if (!active || typeof active !== 'object') return null;
+  const startMs = Date.parse(String(active.startAt || '').trim());
+  if (!Number.isFinite(startMs)) return null;
+  return {
+    id: String(active.id || createCounterSessionId()).slice(0, 80),
+    startAt: toLocalDateTimeString(new Date(startMs)),
+    createdAt: active.createdAt ? String(active.createdAt).slice(0, 40) : new Date().toISOString(),
+    updatedAt: active.updatedAt ? String(active.updatedAt).slice(0, 40) : new Date().toISOString(),
+  };
+}
+
+function sortCounterSessions(sessions) {
+  return [...sessions].sort((left, right) => {
+    const leftStart = Date.parse(left && left.startAt);
+    const rightStart = Date.parse(right && right.startAt);
+    if (Number.isFinite(leftStart) && Number.isFinite(rightStart) && leftStart !== rightStart) return leftStart - rightStart;
+    return String(left && left.id || '').localeCompare(String(right && right.id || ''), undefined, { sensitivity: 'base' });
+  });
+}
+
+function normalizeCounterState(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const sessionsSource = Array.isArray(source.sessions) ? source.sessions : [];
+  const sessions = sortCounterSessions(sessionsSource.map(normalizeCounterSession).filter(Boolean)).slice(-COUNTER_MAX_SESSIONS);
+  const active = normalizeCounterActiveSession(source.active);
+  return {
+    sessions,
+    active,
+    updatedAt: source.updatedAt ? String(source.updatedAt).slice(0, 40) : new Date().toISOString(),
+  };
+}
+
+async function readCounterState() {
+  try {
+    const raw = await fs.promises.readFile(COUNTER_FILE, 'utf8');
+    return normalizeCounterState(JSON.parse(raw));
+  } catch (e) {
+    if (e.code === 'ENOENT') return normalizeCounterState(null);
+    throw e;
+  }
+}
+
+async function writeCounterState(state) {
+  const safe = normalizeCounterState(state);
+  await fs.promises.writeFile(COUNTER_FILE, JSON.stringify(safe, null, 2), 'utf8');
+  return safe;
+}
+
+function appendCounterSession(state, startMs, endMs, createdAt = '') {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return;
+  const item = normalizeCounterSession({
+    id: createCounterSessionId(),
+    startAt: toLocalDateTimeString(new Date(startMs)),
+    endAt: toLocalDateTimeString(new Date(endMs)),
+    createdAt: createdAt || new Date(startMs).toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  if (!item) return;
+  state.sessions.push(item);
+}
+
+function rollCounterActiveSession(state, nowMs = Date.now()) {
+  if (!state || !state.active) return false;
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  let changed = false;
+  let startMs = Date.parse(state.active.startAt);
+  if (!Number.isFinite(startMs)) {
+    state.active = null;
+    return true;
+  }
+  if (startMs > now) {
+    state.active.startAt = toLocalDateTimeString(new Date(now));
+    state.active.updatedAt = new Date().toISOString();
+    return true;
+  }
+
+  const nowDayMs = startOfLocalDay(new Date(now)).getTime();
+  while (startOfLocalDay(new Date(startMs)).getTime() < nowDayMs) {
+    const dayStartMs = startOfLocalDay(new Date(startMs)).getTime();
+    const nextMidnightMs = dayStartMs + MS_PER_DAY;
+    const segmentEndMs = Math.min(nextMidnightMs, now);
+    if (segmentEndMs <= startMs) break;
+    appendCounterSession(state, startMs, segmentEndMs, state.active.createdAt || '');
+    startMs = segmentEndMs;
+    changed = true;
+  }
+
+  if (changed) {
+    state.sessions = sortCounterSessions(state.sessions).slice(-COUNTER_MAX_SESSIONS);
+    state.active.startAt = toLocalDateTimeString(new Date(startMs));
+    state.active.updatedAt = new Date().toISOString();
+    state.updatedAt = new Date().toISOString();
+  }
+  return changed;
+}
+
+function counterSessionDurationMs(session, nowMs = Date.now()) {
+  const startMs = Date.parse(session && session.startAt);
+  if (!Number.isFinite(startMs)) return 0;
+  const isActive = !!(session && session.active);
+  const rawEndMs = isActive ? nowMs : Date.parse(session && session.endAt);
+  const endMs = Number.isFinite(rawEndMs) ? rawEndMs : startMs;
+  return Math.max(0, endMs - startMs);
+}
+
+function collectCounterSnapshot(state, historyDays = COUNTER_HISTORY_DAYS_MAX, nowMs = Date.now()) {
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const safeDays = Math.max(1, Math.min(COUNTER_HISTORY_DAYS_MAX, Math.round(Number(historyDays) || COUNTER_HISTORY_DAYS_MAX)));
+  const today = startOfLocalDay(new Date(now));
+  const todayKey = toLocalDateKey(today);
+  const windowStart = startOfLocalDay(addLocalDays(today, -(safeDays - 1)));
+  const windowStartMs = windowStart.getTime();
+  const windowEndMs = startOfLocalDay(addLocalDays(today, 1)).getTime();
+
+  const dayMap = new Map();
+  for (let i = 0; i < safeDays; i++) {
+    const day = addLocalDays(today, -i);
+    const key = toLocalDateKey(day);
+    dayMap.set(key, {
+      date: key,
+      totalMs: 0,
+      sessions: [],
+    });
+  }
+
+  const registerSegment = (sourceSession, segmentStartMs, segmentEndMs, active = false) => {
+    if (!Number.isFinite(segmentStartMs) || !Number.isFinite(segmentEndMs) || segmentEndMs <= segmentStartMs) return;
+    const dayKey = toLocalDateKey(new Date(segmentStartMs));
+    const day = dayMap.get(dayKey);
+    if (!day) return;
+    const durationMs = Math.max(0, segmentEndMs - segmentStartMs);
+    day.totalMs += durationMs;
+    day.sessions.push({
+      id: String(sourceSession && sourceSession.id || createCounterSessionId()).slice(0, 80),
+      startAt: toLocalDateTimeString(new Date(segmentStartMs)),
+      endAt: toLocalDateTimeString(new Date(segmentEndMs)),
+      durationMs,
+      active,
+    });
+  };
+
+  const sourceSessions = Array.isArray(state && state.sessions) ? state.sessions : [];
+  sourceSessions.forEach(session => {
+    let startMs = Date.parse(session && session.startAt);
+    const endMs = Date.parse(session && session.endAt);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return;
+    if (endMs <= windowStartMs || startMs >= windowEndMs) return;
+    if (startMs < windowStartMs) startMs = windowStartMs;
+    let cursor = startMs;
+    while (cursor < endMs && cursor < windowEndMs) {
+      const dayStartMs = startOfLocalDay(new Date(cursor)).getTime();
+      const dayEndMs = dayStartMs + MS_PER_DAY;
+      const segmentEndMs = Math.min(endMs, dayEndMs, windowEndMs);
+      registerSegment(session, cursor, segmentEndMs, false);
+      cursor = segmentEndMs;
+    }
+  });
+
+  if (state && state.active) {
+    const activeStartMsRaw = Date.parse(state.active.startAt);
+    if (Number.isFinite(activeStartMsRaw) && activeStartMsRaw < now) {
+      let activeStartMs = activeStartMsRaw;
+      if (activeStartMs < windowStartMs) activeStartMs = windowStartMs;
+      let cursor = activeStartMs;
+      while (cursor < now && cursor < windowEndMs) {
+        const dayStartMs = startOfLocalDay(new Date(cursor)).getTime();
+        const dayEndMs = dayStartMs + MS_PER_DAY;
+        const segmentEndMs = Math.min(now, dayEndMs, windowEndMs);
+        registerSegment(state.active, cursor, segmentEndMs, true);
+        cursor = segmentEndMs;
+      }
+    }
+  }
+
+  const days = Array.from(dayMap.values())
+    .filter(day => day.totalMs > 0 || day.date === todayKey)
+    .map(day => ({
+      ...day,
+      sessions: day.sessions.sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt)),
+    }))
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
+  const totals = days.reduce((acc, day) => {
+    acc.windowMs += day.totalMs;
+    if (day.date === todayKey) acc.todayMs = day.totalMs;
+    return acc;
+  }, { windowMs: 0, todayMs: 0 });
+
+  return {
+    nowAt: toLocalDateTimeString(new Date(now)),
+    isRunning: !!(state && state.active),
+    active: state && state.active ? {
+      ...state.active,
+      elapsedMs: counterSessionDurationMs({ ...state.active, active: true }, now),
+    } : null,
+    days,
+    totals,
+    historyDays: safeDays,
+    todayDate: todayKey,
+  };
+}
+
+async function getCounterSnapshot(historyDays = COUNTER_HISTORY_DAYS_MAX) {
+  const state = await readCounterState();
+  if (rollCounterActiveSession(state)) await writeCounterState(state);
+  return collectCounterSnapshot(state, historyDays, Date.now());
+}
+
+async function startCounterSession() {
+  const state = await readCounterState();
+  if (rollCounterActiveSession(state)) await writeCounterState(state);
+  if (!state.active) {
+    state.active = normalizeCounterActiveSession({
+      id: createCounterSessionId(),
+      startAt: toLocalDateTimeString(new Date()),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    state.updatedAt = new Date().toISOString();
+    await writeCounterState(state);
+  }
+  return collectCounterSnapshot(state, COUNTER_HISTORY_DAYS_MAX, Date.now());
+}
+
+async function stopCounterSession() {
+  const state = await readCounterState();
+  if (rollCounterActiveSession(state)) await writeCounterState(state);
+  if (state.active) {
+    const startMs = Date.parse(state.active.startAt);
+    const endMs = Date.now();
+    if (Number.isFinite(startMs) && endMs > startMs) {
+      appendCounterSession(state, startMs, endMs, state.active.createdAt || '');
+      state.sessions = sortCounterSessions(state.sessions).slice(-COUNTER_MAX_SESSIONS);
+    }
+    state.active = null;
+    state.updatedAt = new Date().toISOString();
+    await writeCounterState(state);
+  }
+  return collectCounterSnapshot(state, COUNTER_HISTORY_DAYS_MAX, Date.now());
+}
+
+async function updateCounterSession(payload) {
+  const body = payload && typeof payload === 'object' ? payload : {};
+  const id = String(body.id || '').trim();
+  const startAtRaw = String(body.startAt || '').trim();
+  const endAtRaw = String(body.endAt || '').trim();
+  const startMs = Date.parse(startAtRaw);
+  const endMs = Date.parse(endAtRaw);
+  if (!id) throw new Error('Missing session id');
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) throw new Error('Invalid session range');
+  const startDay = toLocalDateKey(new Date(startMs));
+  const endDay = toLocalDateKey(new Date(endMs));
+  if (startDay !== endDay) throw new Error('Session must stay within a single day');
+
+  const state = await readCounterState();
+  if (rollCounterActiveSession(state)) await writeCounterState(state);
+  const idx = state.sessions.findIndex(item => String(item && item.id || '') === id);
+  if (idx < 0) throw new Error('Session not found');
+  const current = state.sessions[idx];
+  state.sessions[idx] = normalizeCounterSession({
+    ...current,
+    startAt: toLocalDateTimeString(new Date(startMs)),
+    endAt: toLocalDateTimeString(new Date(endMs)),
+    updatedAt: new Date().toISOString(),
+  });
+  state.sessions = sortCounterSessions(state.sessions).slice(-COUNTER_MAX_SESSIONS);
+  state.updatedAt = new Date().toISOString();
+  await writeCounterState(state);
+  return collectCounterSnapshot(state, COUNTER_HISTORY_DAYS_MAX, Date.now());
+}
+
+async function deleteCounterSession(payload) {
+  const id = String(payload && payload.id || '').trim();
+  if (!id) throw new Error('Missing session id');
+  const state = await readCounterState();
+  if (rollCounterActiveSession(state)) await writeCounterState(state);
+  state.sessions = state.sessions.filter(item => String(item && item.id || '') !== id);
+  state.updatedAt = new Date().toISOString();
+  await writeCounterState(state);
+  return collectCounterSnapshot(state, COUNTER_HISTORY_DAYS_MAX, Date.now());
+}
+
+async function resetCounterDay(payload) {
+  const dayKey = String(payload && payload.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) throw new Error('Invalid day key');
+  const state = await readCounterState();
+  if (rollCounterActiveSession(state)) await writeCounterState(state);
+  state.sessions = state.sessions.filter(item => toLocalDateKey(new Date(item.startAt)) !== dayKey);
+  const todayKey = toLocalDateKey(new Date());
+  if (state.active && dayKey === todayKey) {
+    state.active.startAt = toLocalDateTimeString(new Date());
+    state.active.updatedAt = new Date().toISOString();
+  }
+  state.updatedAt = new Date().toISOString();
+  await writeCounterState(state);
+  return collectCounterSnapshot(state, COUNTER_HISTORY_DAYS_MAX, Date.now());
+}
+
+async function resetCounterAll() {
+  const state = await readCounterState();
+  if (rollCounterActiveSession(state)) await writeCounterState(state);
+  state.sessions = [];
+  if (state.active) {
+    state.active.startAt = toLocalDateTimeString(new Date());
+    state.active.updatedAt = new Date().toISOString();
+  }
+  state.updatedAt = new Date().toISOString();
+  await writeCounterState(state);
+  return collectCounterSnapshot(state, COUNTER_HISTORY_DAYS_MAX, Date.now());
+}
+
 // ── Server-Sent Events infrastructure ────────────────────────────────────────
 // Clients connect to GET /sse and receive named events instead of polling.
 // Each event carries the same JSON payload the old poll endpoints returned,
@@ -5118,6 +5452,61 @@ const server = http.createServer(async (req, res) => {
       json(await getMergedCalendarEvents(forceRefresh));
     }
     catch (e) { err500(e.message); }
+
+  } else if (reqPath === '/counter/state' && req.method === 'GET') {
+    try {
+      const days = Number(urlObj.searchParams.get('days'));
+      const historyDays = Number.isFinite(days) ? days : COUNTER_HISTORY_DAYS_MAX;
+      json(await getCounterSnapshot(historyDays));
+    } catch (e) { err500(e.message); }
+
+  } else if (reqPath === '/counter/start' && req.method === 'POST') {
+    try {
+      json(await startCounterSession());
+    } catch (e) { err500(e.message); }
+
+  } else if (reqPath === '/counter/stop' && req.method === 'POST') {
+    try {
+      json(await stopCounterSession());
+    } catch (e) { err500(e.message); }
+
+  } else if (reqPath === '/counter/session/update' && req.method === 'POST') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      json(await updateCounterSession(body));
+    } catch (e) {
+      if (/invalid|missing|not found|single day/i.test(String(e && e.message || ''))) {
+        res.writeHead(400); res.end(String(e.message)); return;
+      }
+      err500(e.message);
+    }
+
+  } else if (reqPath === '/counter/session/delete' && req.method === 'POST') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      json(await deleteCounterSession(body));
+    } catch (e) {
+      if (/missing|not found/i.test(String(e && e.message || ''))) {
+        res.writeHead(400); res.end(String(e.message)); return;
+      }
+      err500(e.message);
+    }
+
+  } else if (reqPath === '/counter/day/reset' && req.method === 'POST') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      json(await resetCounterDay(body));
+    } catch (e) {
+      if (/invalid/i.test(String(e && e.message || ''))) {
+        res.writeHead(400); res.end(String(e.message)); return;
+      }
+      err500(e.message);
+    }
+
+  } else if (reqPath === '/counter/reset' && req.method === 'POST') {
+    try {
+      json(await resetCounterAll());
+    } catch (e) { err500(e.message); }
 
   } else if (reqPath === '/events' && req.method === 'GET' && !urlObj.searchParams.has('save')) {
     try { json({ events: await readEvents() }); }

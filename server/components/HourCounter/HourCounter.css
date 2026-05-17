@@ -1,0 +1,407 @@
+.shortcut-counter-tile {
+  position: relative;
+  --shortcut-hero-wrap-size: clamp(70px, min(84cqi, 84cqh), 152px);
+  --shortcut-hero-core-size: clamp(60px, min(70cqi, 70cqh), 122px);
+  --shortcut-hero-icon-size: clamp(25px, min(25cqi, 25cqh), 45px);
+  padding: 4px 6px;
+  border-color: rgba(120,167,255,0.24);
+  background: rgba(10,14,18,0.72);
+}
+
+.shortcut-counter-main {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 0 2px 0 0;
+}
+
+.shortcut-counter-copy-btn {
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  align-content: center;
+}
+
+.shortcut-counter-copy-btn:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.shortcut-counter-copy-btn:focus-visible {
+  outline: 2px solid rgba(120,167,255,0.45);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.shortcut-counter-toggle-btn {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  justify-self: end;
+  margin-right: 8px;
+  overflow: visible;
+}
+
+.shortcut-counter-toggle-btn:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.shortcut-counter-wrap {
+  --counter-rgb: 120, 167, 255;
+  --shortcut-primary-rgb: var(--counter-rgb);
+  --shortcut-primary: #4676b5;
+  flex-shrink: 0;
+}
+
+.shortcut-counter-copy {
+  display: grid;
+  gap: 4px;
+  align-content: center;
+}
+
+.shortcut-counter-kicker {
+  color: #9eb1be;
+  font-size: 10.5px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.shortcut-counter-total {
+  color: #eef5ff;
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 950;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.shortcut-counter-status {
+  color: #9db0bd;
+  font-size: 12px;
+  font-weight: 820;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shortcut-counter-tile.running .shortcut-counter-wrap { --counter-rgb: 45, 211, 111; }
+.shortcut-counter-tile.running .shortcut-counter-wrap { --shortcut-primary: #1ebd68; }
+.shortcut-counter-tile.running .shortcut-counter-status { color: #67d79a; }
+
+.counter-overlay[hidden] { display: none !important; }
+
+.counter-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 210;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  background:
+    radial-gradient(80% 100% at 50% 0%, rgba(var(--accent-rgb),0.16), transparent 58%),
+    rgba(0,0,0,0.56);
+  backdrop-filter: blur(18px) saturate(1.15);
+}
+
+.counter-panel {
+  width: min(1180px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: hidden;
+  border: 1px solid rgba(var(--accent-rgb),0.24);
+  border-radius: 20px;
+  background:
+    radial-gradient(95% 120% at 18% 0%, rgba(var(--accent-rgb),0.17), transparent 52%),
+    linear-gradient(135deg, rgba(24,28,35,0.96), rgba(8,12,15,0.985));
+  box-shadow: 0 26px 100px rgba(0,0,0,0.74), 0 0 72px rgba(var(--accent-rgb),0.14);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.counter-head {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.counter-kicker {
+  color: #9fb2ab;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.9px;
+  text-transform: uppercase;
+}
+
+.counter-title {
+  margin-top: 2px;
+  color: #edf5f1;
+  font-size: 21px;
+  font-weight: 900;
+  line-height: 1.05;
+}
+
+.counter-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.counter-icon-btn {
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 11px;
+  background: rgba(255,255,255,0.055);
+  color: #dbe8e2;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.counter-icon-btn:hover {
+  background: rgba(255,255,255,0.11);
+  border-color: rgba(var(--accent-rgb),0.34);
+}
+
+.counter-icon-btn.danger:hover {
+  border-color: rgba(229,57,53,0.48);
+  background: rgba(229,57,53,0.2);
+}
+
+.counter-icon-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.counter-body {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+}
+
+.counter-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.counter-summary-card {
+  min-width: 0;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 11px;
+  background: rgba(8,14,16,0.56);
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.counter-summary-card span {
+  color: #9fb2ab;
+  font-size: 10.5px;
+  font-weight: 850;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.counter-summary-card b {
+  color: #edf5f1;
+  font-size: 18px;
+  font-weight: 920;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.counter-days {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.counter-days::-webkit-scrollbar { width: 8px; }
+.counter-days::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 999px; }
+
+.counter-empty {
+  min-height: 120px;
+  border: 1px dashed rgba(255,255,255,0.12);
+  border-radius: 12px;
+  color: #9fb2ab;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.counter-day-card {
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  background: rgba(10,16,18,0.56);
+  overflow: hidden;
+}
+
+.counter-day-head {
+  padding: 9px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.counter-day-label {
+  color: #edf5f1;
+  font-size: 13.5px;
+  font-weight: 880;
+}
+
+.counter-day-total {
+  color: #8ce9b7;
+  font-size: 13px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.counter-day-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.counter-day-reset {
+  height: 24px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.05);
+  color: #d8e4de;
+  padding: 0 8px;
+  font-size: 10.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.counter-day-reset:hover {
+  border-color: rgba(229,57,53,0.42);
+  background: rgba(229,57,53,0.18);
+}
+
+.counter-session-list {
+  padding: 8px;
+  display: grid;
+  gap: 7px;
+}
+
+.counter-session-row {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.03);
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.counter-session-row.active {
+  border-color: rgba(30,215,96,0.32);
+  background: rgba(30,215,96,0.11);
+}
+
+.counter-session-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.counter-session-duration {
+  color: #dce8e2;
+  font-size: 13px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.counter-session-row.active .counter-session-duration {
+  color: #89e2b4;
+}
+
+.counter-session-tag {
+  color: #9eb1be;
+  font-size: 11px;
+  font-weight: 820;
+}
+
+.counter-session-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.counter-session-input {
+  min-width: 0;
+  height: 31px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  background: rgba(8,14,17,0.66);
+  color: #edf5f1;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 760;
+  font-family: inherit;
+}
+
+.counter-session-btn {
+  height: 31px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  color: #dce8e2;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 820;
+  cursor: pointer;
+}
+
+.counter-session-btn:hover {
+  border-color: rgba(var(--accent-rgb),0.44);
+  background: rgba(var(--accent-rgb),0.2);
+}
+
+.counter-session-btn.danger:hover {
+  border-color: rgba(229,57,53,0.44);
+  background: rgba(229,57,53,0.2);
+}
+
+@media (max-width: 940px) {
+  .counter-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .counter-session-fields {
+    grid-template-columns: 1fr 1fr;
+  }
+}

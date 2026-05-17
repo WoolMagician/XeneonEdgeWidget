@@ -15,7 +15,8 @@
 <link rel="stylesheet" href="components/DayModal/DayModal.css">
 <link rel="stylesheet" href="components/EventToast/EventToast.css">
 <link rel="stylesheet" href="components/MicPanel/MicPanel.css">
-<link rel="stylesheet" href="components/ShortcutPanel/ShortcutPanel.css">
+<link rel="stylesheet" href="components/ShortcutPanel/ShortcutPanel.css?v=20260517-halo-corefill">
+<link rel="stylesheet" href="components/HourCounter/HourCounter.css?v=20260517-halo-corefill">
 <link rel="stylesheet" href="components/TasksPanel/TasksPanel.css">
 <link rel="stylesheet" href="components/CustomSelect/CustomSelect.css">
 <link rel="stylesheet" href="components/SystemPanel/SystemPanel.css">
@@ -290,13 +291,27 @@
               </span>
             </span>
           </button>
-          <div class="shortcut-spare-tile" aria-hidden="true">
-            <span class="shortcut-placeholder-wrap">
-              <span class="shortcut-placeholder-ring"></span>
-              <span class="shortcut-placeholder-ring2"></span>
-              <span class="shortcut-placeholder-glow"></span>
-              <span class="shortcut-placeholder-core"></span>
-            </span>
+          <div class="shortcut-spare-tile shortcut-counter-tile" id="counter-tile">
+            <div class="shortcut-counter-main">
+              <button class="shortcut-counter-copy-btn" id="counter-open-overlay-btn" type="button" onclick="openHourCounterOverlay()" data-i18n-title="counter_history_open" title="Apri storico ore">
+                <span class="shortcut-counter-copy">
+                  <span class="shortcut-counter-kicker" data-i18n="counter_today_kicker">Ore oggi</span>
+                  <span class="shortcut-counter-total" id="counter-today-total">0h 00m</span>
+                  <span class="shortcut-counter-status" id="counter-status" data-i18n="counter_idle">Fermo</span>
+                </span>
+              </button>
+              <button class="shortcut-counter-toggle-btn" id="counter-toggle-btn" type="button" onclick="toggleHourCounter()" data-i18n-title="counter_toggle" title="Avvia / ferma timer">
+                <span class="shortcut-counter-wrap shortcut-btn-wrap" aria-hidden="true">
+                  <span class="shortcut-ring"></span>
+                  <span class="shortcut-ring2"></span>
+                  <span class="shortcut-glow"></span>
+                  <span class="shortcut-btn">
+                    <svg id="counter-play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z"/></svg>
+                    <svg id="counter-stop-icon" viewBox="0 0 24 24" aria-hidden="true" style="display:none"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+                  </span>
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -731,6 +746,45 @@
   </section>
 </div>
 
+<div class="counter-overlay" id="counter-overlay" hidden onclick="if(event.target===this)closeHourCounterOverlay()">
+  <section class="counter-panel" role="dialog" aria-modal="true" aria-labelledby="counter-panel-title">
+    <div class="counter-head">
+      <div>
+        <div class="counter-kicker" data-i18n="counter_history">Storico ore</div>
+        <div class="counter-title" id="counter-panel-title" data-i18n="counter_last_30_days">Ultimi 30 giorni</div>
+      </div>
+      <div class="counter-head-actions">
+        <button class="counter-icon-btn" type="button" onclick="refreshHourCounter(true)" data-i18n-title="apps_refresh" title="Aggiorna">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.76-4.24L13 11h8V3l-3.3 3.3Z"/></svg>
+        </button>
+        <button class="counter-icon-btn danger" type="button" onclick="resetHourCounterAll()" data-i18n-title="counter_reset_all" title="Reset totale">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M7 6l1 14h8l1-14"/></svg>
+        </button>
+        <button class="counter-icon-btn" type="button" onclick="closeHourCounterOverlay()" data-i18n-title="close" title="Chiudi">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm11.2 0L19 6.4 6.4 19 5 17.6 17.6 5Z"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="counter-body">
+      <div class="counter-summary">
+        <div class="counter-summary-card">
+          <span data-i18n="counter_today_sum">Totale oggi</span>
+          <b id="counter-summary-today">0h 00m</b>
+        </div>
+        <div class="counter-summary-card">
+          <span data-i18n="counter_30d_sum">Totale 30 giorni</span>
+          <b id="counter-summary-window">0h 00m</b>
+        </div>
+        <div class="counter-summary-card">
+          <span data-i18n="counter_running">Timer</span>
+          <b id="counter-summary-status">Fermo</b>
+        </div>
+      </div>
+      <div class="counter-days" id="counter-days-list"></div>
+    </div>
+  </section>
+</div>
+
 <div class="app-switcher" id="app-switcher" hidden onclick="if(event.target===this)closeAppSwitcher()">
   <div class="app-panel" role="dialog" aria-modal="true" aria-labelledby="app-switcher-title">
     <div class="app-head">
@@ -836,6 +890,7 @@
 <script src="js/system.js"></script>
 <script src="js/network.js"></script>
 <script src="js/tasks.js"></script>
+<script src="js/hour-counter.js"></script>
 <script src="js/picker.js"></script>
 <script src="js/app-switcher.js"></script>
 <script src="js/settings.js"></script>

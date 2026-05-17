@@ -22,6 +22,7 @@ const need = {
   system: ['full', 'system'].includes(activePanel),
   events: ['full', 'media'].includes(activePanel),
   tasks:  ['full', 'media', 'tasks'].includes(activePanel),
+  counter: ['full'].includes(activePanel),
 };
 
 setInterval(tickClock, 1000);
@@ -30,6 +31,7 @@ setInterval(tickClock, 1000);
 if (need.system) { fetchWeather(); setInterval(fetchWeather, 30 * 60 * 1000); }
 if (need.events) { loadCalendarEvents(); setInterval(checkReminders, 15000); }
 if (need.tasks)  { loadTasks(); }
+if (need.counter && typeof initHourCounter === 'function') initHourCounter();
 
 // Real-time data (status, media, system, audio) uses Server-Sent Events.
 // Falls back to conventional polling if EventSource is unavailable or the
@@ -150,6 +152,12 @@ document.addEventListener('keydown', e => {
     if (calendarOverlay && !calendarOverlay.hidden) {
       e.preventDefault();
       closeCalendarOverlay();
+      return;
+    }
+    const counterOverlay = document.getElementById('counter-overlay');
+    if (counterOverlay && !counterOverlay.hidden) {
+      e.preventDefault();
+      closeHourCounterOverlay();
       return;
     }
     const weatherOverlay = document.getElementById('weather-overlay');
