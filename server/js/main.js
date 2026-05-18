@@ -48,6 +48,73 @@ if (need.counter && typeof initHourCounter === 'function') initHourCounter();
   let pollFallbackMediaTimer = null;
   let pollFallbackSystemTimer = null;
   let reconnectDelay = 2000;
+  let reconnectTimer = null;
+  let sseHealthTimer = null;
+  let lastSseEventAt = 0;
+  let connectAttempt = 0;
+
+  function closeEventSource() {
+    if (!es) return;
+    try { es.onopen = null; } catch {}
+    try { es.onerror = null; } catch {}
+    try { es.close(); } catch {}
+    es = null;
+  }
+
+  function diagClientLog(level, message, details = null) {
+    try {
+      fetch('/diag/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: 'main.sse',
+          level,
+          message,
+          details: details || {},
+        }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {}
+  }
+
+  function scheduleReconnect(reason, details = null) {
+    if (reconnectTimer) return;
+    const readyState = es ? es.readyState : null;
+    startPollingFallback();
+    closeEventSource();
+    diagClientLog('WARN', 'sse reconnect scheduled', {
+      reason,
+      reconnectDelay,
+      readyState,
+      ...(details && typeof details === 'object' ? details : {}),
+    });
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      stopPollFallback();
+      connect();
+    }, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+  }
+
+  function markSseEvent(channel) {
+    lastSseEventAt = Date.now();
+    if (channel === 'status' && typeof setOnline === 'function') setOnline();
+  }
+
+  function ensureSseHealthWatch() {
+    if (sseHealthTimer) return;
+    sseHealthTimer = setInterval(() => {
+      if (!es) return;
+      const ageMs = Date.now() - Number(lastSseEventAt || 0);
+      if (es.readyState === EventSource.CONNECTING && ageMs >= 7000) {
+        scheduleReconnect('connecting-timeout', { ageMs });
+        return;
+      }
+      if (es.readyState === EventSource.OPEN && ageMs >= 15000) {
+        scheduleReconnect('event-stall', { ageMs });
+      }
+    }, 2500);
+  }
 
   function stopPollFallback() {
     if (pollFallbackStatusTimer) { clearInterval(pollFallbackStatusTimer); pollFallbackStatusTimer = null; }
@@ -76,46 +143,78 @@ if (need.counter && typeof initHourCounter === 'function') initHourCounter();
   }
 
   function connect() {
-    if (es) { try { es.close(); } catch {} }
-    es = new EventSource('/sse');
+    connectAttempt += 1;
+    const attemptId = connectAttempt;
+    closeEventSource();
+    const source = new EventSource('/sse');
+    es = source;
+    lastSseEventAt = Date.now();
+    diagClientLog('INFO', 'sse connect attempt', { attemptId });
+    ensureSseHealthWatch();
 
-    es.addEventListener('status', e => {
+    source.addEventListener('status', e => {
+      if (es !== source) return;
       try {
         const data = JSON.parse(e.data);
         // applyUI is the mic.js function for mic mute state; setOnline marks connectivity.
         if (typeof applyUI === 'function') { applyUI(data.muted); }
-        if (typeof setOnline === 'function') setOnline();
+        markSseEvent('status');
       } catch {}
     });
-    es.addEventListener('media', e => {
-      try { applyMedia(JSON.parse(e.data)); } catch {}
+    source.addEventListener('media', e => {
+      if (es !== source) return;
+      try {
+        applyMedia(JSON.parse(e.data));
+        markSseEvent('media');
+      } catch {}
     });
-    es.addEventListener('system', e => {
-      try { applySystem(JSON.parse(e.data)); } catch {}
+    source.addEventListener('system', e => {
+      if (es !== source) return;
+      try {
+        applySystem(JSON.parse(e.data));
+        markSseEvent('system');
+      } catch {}
     });
-    es.addEventListener('audio', e => {
-      try { applyAudio(JSON.parse(e.data)); } catch {}
+    source.addEventListener('audio', e => {
+      if (es !== source) return;
+      try {
+        applyAudio(JSON.parse(e.data));
+        markSseEvent('audio');
+      } catch {}
     });
-    es.addEventListener('audio-activity', e => {
+    source.addEventListener('audio-activity', e => {
+      if (es !== source) return;
       try {
         if (need.audio && typeof applyAudioActivity === 'function') {
           applyAudioActivity(JSON.parse(e.data));
         }
+        markSseEvent('audio-activity');
       } catch {}
     });
 
-    es.onopen = () => {
+    source.onopen = () => {
+      if (es !== source) return;
       reconnectDelay = 2000;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       stopPollFallback();
+      lastSseEventAt = Date.now();
+      diagClientLog('INFO', 'sse open', { attemptId });
     };
 
-    es.onerror = () => {
+    source.onerror = () => {
+      if (es !== source) return;
       // On error EventSource auto-reconnects, but if we get repeated failures
       // fall back to polling so the UI never stays stale.
-      if (es.readyState === EventSource.CLOSED) {
+      if (source.readyState === EventSource.CLOSED) {
+        scheduleReconnect('closed-error');
+        return;
+      }
+      if (source.readyState === EventSource.CONNECTING) {
         startPollingFallback();
-        setTimeout(() => { stopPollFallback(); connect(); }, reconnectDelay);
-        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+        diagClientLog('WARN', 'sse error while connecting', { attemptId });
       }
     };
   }

@@ -56,6 +56,82 @@ const BACKGROUND_MIME_BY_EXT = new Map([
   ['.webp', 'image/webp'], ['.gif', 'image/gif'], ['.mp4', 'video/mp4'], ['.webm', 'video/webm'],
 ]);
 const BACKGROUND_EXT_BY_MIME = new Map([...BACKGROUND_MIME_BY_EXT.entries()].map(([ext, mime]) => [mime, ext]));
+const DIAG_LOGS_ENABLED = parseBooleanConfig(process.env.XEW_DIAG_LOGS, true);
+const DIAG_LOG_DIR = process.env.XEW_DIAG_LOG_DIR
+  ? path.resolve(process.env.XEW_DIAG_LOG_DIR)
+  : path.join(__dirname, 'logs');
+const DIAG_LOG_FILE = process.env.XEW_DIAG_LOG_FILE
+  ? path.resolve(process.env.XEW_DIAG_LOG_FILE)
+  : path.join(DIAG_LOG_DIR, 'runtime.log');
+const DIAG_LOG_ROTATE_BYTES = Math.max(
+  2 * 1024 * 1024,
+  Number(process.env.XEW_DIAG_LOG_ROTATE_BYTES) || (20 * 1024 * 1024),
+);
+const DIAG_LOG_DETAILS_MAX_CHARS = Math.max(
+  512,
+  Number(process.env.XEW_DIAG_LOG_DETAILS_MAX_CHARS) || 8000,
+);
+let diagLogRotateCheckCounter = 0;
+let diagLogInitDone = false;
+let diagLogWriteFailed = false;
+
+function ensureDiagLogReady() {
+  if (diagLogInitDone) return;
+  diagLogInitDone = true;
+  if (!DIAG_LOGS_ENABLED) return;
+  try {
+    fs.mkdirSync(DIAG_LOG_DIR, { recursive: true });
+  } catch (error) {
+    diagLogWriteFailed = true;
+    try { console.warn('[diag-log] unable to create log dir:', error && error.message ? error.message : error); } catch {}
+  }
+}
+
+function maybeRotateDiagLog() {
+  if (!DIAG_LOGS_ENABLED || diagLogWriteFailed) return;
+  diagLogRotateCheckCounter += 1;
+  if (diagLogRotateCheckCounter < 200) return;
+  diagLogRotateCheckCounter = 0;
+  try {
+    const stat = fs.statSync(DIAG_LOG_FILE);
+    if (!stat || !Number.isFinite(stat.size) || stat.size < DIAG_LOG_ROTATE_BYTES) return;
+    const rotatedFile = `${DIAG_LOG_FILE}.1`;
+    try { fs.rmSync(rotatedFile, { force: true }); } catch {}
+    fs.renameSync(DIAG_LOG_FILE, rotatedFile);
+  } catch {}
+}
+
+function formatDiagDetails(details) {
+  if (details === undefined || details === null) return '';
+  try {
+    let serialized = JSON.stringify(details);
+    if (serialized.length > DIAG_LOG_DETAILS_MAX_CHARS) {
+      serialized = `${serialized.slice(0, DIAG_LOG_DETAILS_MAX_CHARS)}...<truncated>`;
+    }
+    return ` ${serialized}`;
+  } catch {
+    return ' {"_serializeError":true}';
+  }
+}
+
+function diagLog(level, channel, message, details = null) {
+  if (!DIAG_LOGS_ENABLED || diagLogWriteFailed) return;
+  ensureDiagLogReady();
+  if (diagLogWriteFailed) return;
+  const ts = new Date().toISOString();
+  const safeLevel = String(level || 'INFO').toUpperCase();
+  const safeChannel = String(channel || 'general').trim() || 'general';
+  const safeMessage = String(message || '').replace(/\r?\n/g, ' ').trim();
+  const detailText = formatDiagDetails(details);
+  const line = `[${ts}] [${safeLevel}] [${safeChannel}] ${safeMessage}${detailText}\n`;
+  try {
+    fs.appendFileSync(DIAG_LOG_FILE, line, 'utf8');
+    maybeRotateDiagLog();
+  } catch (error) {
+    diagLogWriteFailed = true;
+    try { console.warn('[diag-log] write failed:', error && error.message ? error.message : error); } catch {}
+  }
+}
 
 // CSV column indices for SoundVolumeView /scomma (no header row)
 const F = { NAME: 0, TYPE: 1, DIR: 2, DEVICE_NAME: 3, DEFAULT: 4, STATE: 7, MUTED: 8, VOL_PCT: 10, ITEM_ID: 17, CLI_ID: 18, WINDOW_TITLE: 21 };
@@ -96,6 +172,7 @@ function areFallbacksEnabled() {
 function setFallbacksEnabled(nextValue) {
   fallbacksEnabled = !!nextValue;
   console.log(`[Fallbacks] ${fallbacksEnabled ? 'enabled' : 'disabled'}`);
+  diagLog('INFO', 'fallbacks', `fallbacks ${fallbacksEnabled ? 'enabled' : 'disabled'}`);
   return fallbacksEnabled;
 }
 
@@ -234,6 +311,8 @@ let mediaStreamStarting = false;
 let mediaStreamBuffer = '';
 let mediaStreamRestartNotBefore = 0;
 let mediaStreamRecycleTimer = null;
+let mediaStreamConsecutiveParseErrors = 0;
+let mediaStreamBufferTrimCount = 0;
 let mediaStreamWaiterSeq = 0;
 const mediaStreamWaiters = new Map();
 let lastMediaRequestAt = 0;
@@ -245,6 +324,8 @@ const WINDOW_APPS_CACHE_MS = 15 * 1000;
 const AUDIO_OVERRIDE_TTL_MS = 6000;
 const artworkCache = new Map();
 const mediaArtworkLookupInFlight = new Map();
+const mediaSessionThumbnailLookupCache = new Map();
+const mediaSessionThumbnailLookupInFlight = new Set();
 const weatherLocationCache = new Map();
 const windowAppsCache = { apps: [], updatedAt: 0 };
 let speakerAudioOverride = { volume: null, muted: null, expiresAt: 0 };
@@ -254,6 +335,12 @@ let lastAudioInfoSnapshot = null;
 let lastAudioInfoUpdatedAt = 0;
 let lastAudioCtlRawSnapshot = null;
 let lastAudioCtlRawUpdatedAt = 0;
+let speakerVolumeQueuedLevel = null;
+let speakerVolumeQueueInFlight = false;
+let micVolumeQueuedLevel = null;
+let micVolumeQueueInFlight = false;
+const appVolumeQueuedLevels = new Map();
+const appVolumeQueueInFlight = new Set();
 let audioActivityCache = { speaker: 0, apps: [], updatedAt: 0 };
 let audioActivitySampleInFlight = false;
 let audioActivityStreamProcess = null;
@@ -279,8 +366,15 @@ const MEDIA_STREAM_CACHE_STALE_MS = 2200;
 const MEDIA_STREAM_INTERVAL_MS = 90;
 const MEDIA_STREAM_WAIT_MS = 180;
 const MEDIA_STREAM_RESTART_BACKOFF_MS = 600;
-const MEDIA_STREAM_MAX_BUFFER_CHARS = 128 * 1024;
-const MEDIA_SSE_PUSH_MIN_INTERVAL_MS = 90;
+const MEDIA_STREAM_MAX_BUFFER_CHARS = 512 * 1024;
+const MEDIA_STREAM_PARSE_RECYCLE_THRESHOLD = 12;
+const MEDIA_STREAM_BUFFER_TRIM_RECYCLE_THRESHOLD = 3;
+const MEDIA_SSE_PUSH_MIN_INTERVAL_MS = 180;
+const MEDIA_THUMBNAIL_MAX_CHARS_STREAM = 180 * 1024;
+const MEDIA_THUMBNAIL_MAX_CHARS_MEDIA_INFO = 900 * 1024;
+const MEDIA_THUMBNAIL_MISSING_HOLD_MS = 1800;
+const MEDIA_SESSION_THUMBNAIL_LOOKUP_COOLDOWN_MS = 12000;
+const MEDIA_SESSION_THUMBNAIL_LOOKUP_CACHE_MAX = 320;
 const AUDIO_SSE_REFRESH_INTERVAL_MS = 450;
 const MEDIA_TRANSIENT_CLOSE_GRACE_MS = 4500;
 const MEDIA_PLAYING_STALL_EPSILON_SECONDS = 0.03;
@@ -290,6 +384,7 @@ const MEDIA_PLAYBACK_RATE_FORCE_PAUSED_MAX = 0.05;
 const MEDIA_TRACK_CHANGE_HINT_GRACE_MS = 1700;
 const MEDIA_EXPLICIT_CLOSE_GRACE_MS = 0;
 let mediaTransientHoldState = { key: '', startedAt: 0 };
+let mediaThumbnailHoldState = { key: '', startedAt: 0 };
 const AUDIOCTL_MEDIA_ACTION_MAP = Object.freeze({
   playpause: 'media-playpause',
   next: 'media-next',
@@ -340,6 +435,129 @@ function applyAppAudioOverride(appItem) {
   if (typeof override.volume === 'number') appItem.volume = override.volume;
   if (typeof override.muted === 'boolean') appItem.muted = override.muted;
   return appItem;
+}
+
+async function applySpeakerVolumeLevel(level) {
+  const vol = Math.max(0, Math.min(100, Math.round(Number(level) || 0)));
+  const fast = await runAudioCtl(['set-master', String(vol)], 1800);
+  if (fast.ok) return true;
+  if (!areFallbacksEnabled()) return false;
+  await execFilePromise(SVV, ['/SetVolume', 'DefaultRenderDevice', String(vol)], { timeout: 5000, maxBuffer: 1024 * 1024 });
+  return true;
+}
+
+async function applyMicVolumeLevel(level) {
+  const vol = Math.max(0, Math.min(100, Math.round(Number(level) || 0)));
+  const fast = await runAudioCtl(['set-capture', String(vol)], 1800);
+  if (fast.ok) return true;
+  if (!areFallbacksEnabled()) return false;
+  await execFilePromise(SVV, ['/SetVolume', 'DefaultCaptureDevice', String(vol)], { timeout: 5000, maxBuffer: 1024 * 1024 });
+  return true;
+}
+
+async function flushSpeakerVolumeQueue() {
+  if (speakerVolumeQueueInFlight || speakerVolumeQueuedLevel === null) return;
+  speakerVolumeQueueInFlight = true;
+  const level = speakerVolumeQueuedLevel;
+  speakerVolumeQueuedLevel = null;
+  try {
+    await applySpeakerVolumeLevel(level);
+  } catch (error) {
+    diagLog('WARN', 'volume-set', 'speaker volume apply failed', {
+      level,
+      error: error && error.message ? error.message : String(error || 'unknown'),
+    });
+  } finally {
+    speakerVolumeQueueInFlight = false;
+    if (speakerVolumeQueuedLevel !== null) {
+      setTimeout(() => { flushSpeakerVolumeQueue().catch(() => {}); }, 0);
+    }
+  }
+}
+
+function queueSpeakerVolumeLevel(level) {
+  speakerVolumeQueuedLevel = Math.max(0, Math.min(100, Math.round(Number(level) || 0)));
+  if (!speakerVolumeQueueInFlight) {
+    flushSpeakerVolumeQueue().catch(() => {});
+  }
+}
+
+async function flushMicVolumeQueue() {
+  if (micVolumeQueueInFlight || micVolumeQueuedLevel === null) return;
+  micVolumeQueueInFlight = true;
+  const level = micVolumeQueuedLevel;
+  micVolumeQueuedLevel = null;
+  try {
+    await applyMicVolumeLevel(level);
+  } catch (error) {
+    diagLog('WARN', 'volume-set', 'mic volume apply failed', {
+      level,
+      error: error && error.message ? error.message : String(error || 'unknown'),
+    });
+  } finally {
+    micVolumeQueueInFlight = false;
+    if (micVolumeQueuedLevel !== null) {
+      setTimeout(() => { flushMicVolumeQueue().catch(() => {}); }, 0);
+    }
+  }
+}
+
+function queueMicVolumeLevel(level) {
+  micVolumeQueuedLevel = Math.max(0, Math.min(100, Math.round(Number(level) || 0)));
+  if (!micVolumeQueueInFlight) {
+    flushMicVolumeQueue().catch(() => {});
+  }
+}
+
+async function applyAppVolumeLevel(targetId, level) {
+  const target = sanitizeAudioSessionId(targetId);
+  if (!target) return false;
+  const vol = Math.max(0, Math.min(100, Math.round(Number(level) || 0)));
+  const fast = await runAudioCtl(['set-app-volume', target, String(vol)], 2200);
+  if (fast.ok) return true;
+  if (!areFallbacksEnabled()) return false;
+  const svvTarget = await resolveSvvAppTarget(target);
+  if (!svvTarget) return false;
+  await execFilePromise(SVV, ['/SetVolume', svvTarget, String(vol)], { timeout: 5000, maxBuffer: 1024 * 1024 });
+  return true;
+}
+
+async function flushAppVolumeQueue(targetId) {
+  const target = sanitizeAudioSessionId(targetId);
+  if (!target) return;
+  if (appVolumeQueueInFlight.has(target) || !appVolumeQueuedLevels.has(target)) return;
+  appVolumeQueueInFlight.add(target);
+  const level = appVolumeQueuedLevels.get(target);
+  appVolumeQueuedLevels.delete(target);
+  try {
+    const applied = await applyAppVolumeLevel(target, level);
+    if (!applied) {
+      diagLog('WARN', 'volume-set', 'app volume apply skipped (backend unavailable)', {
+        target,
+        level,
+      });
+    }
+  } catch (error) {
+    diagLog('WARN', 'volume-set', 'app volume apply failed', {
+      target,
+      level,
+      error: error && error.message ? error.message : String(error || 'unknown'),
+    });
+  } finally {
+    appVolumeQueueInFlight.delete(target);
+    if (appVolumeQueuedLevels.has(target)) {
+      setTimeout(() => { flushAppVolumeQueue(target).catch(() => {}); }, 0);
+    }
+  }
+}
+
+function queueAppVolumeLevel(targetId, level) {
+  const target = sanitizeAudioSessionId(targetId);
+  if (!target) return;
+  appVolumeQueuedLevels.set(target, Math.max(0, Math.min(100, Math.round(Number(level) || 0))));
+  if (!appVolumeQueueInFlight.has(target)) {
+    flushAppVolumeQueue(target).catch(() => {});
+  }
 }
 
 function makeCsvPath() {
@@ -2125,6 +2343,7 @@ function resetMediaPlayingStallState() {
 
 function logMediaDebug(message, details = null) {
   if (!MEDIA_DEBUG_LOGS) return;
+  diagLog('DEBUG', 'media-debug', message, details || undefined);
   if (details && typeof details === 'object') {
     try {
       console.log(`[media-debug] ${message} ${JSON.stringify(details)}`);
@@ -2754,6 +2973,29 @@ function isLikelyAppIconThumbnail(value) {
   return bytes > 0 && bytes <= 12000;
 }
 
+function mediaThumbnailMaxCharsForSource(sourceTag = 'unknown') {
+  const source = String(sourceTag || '').trim().toLowerCase();
+  if (source.startsWith('media-info') || source.startsWith('media-session')) {
+    return MEDIA_THUMBNAIL_MAX_CHARS_MEDIA_INFO;
+  }
+  return MEDIA_THUMBNAIL_MAX_CHARS_STREAM;
+}
+
+function sanitizeMediaThumbnailValue(value, sourceTag = 'unknown') {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return null;
+  const maxChars = mediaThumbnailMaxCharsForSource(sourceTag);
+  if (text.startsWith('data:') && text.length > maxChars) {
+    diagLog('WARN', 'media-thumbnail', 'dropped oversized inline thumbnail payload', {
+      source: sourceTag,
+      chars: text.length,
+      maxChars,
+    });
+    return null;
+  }
+  return text;
+}
+
 function isBrowserMediaSource(data) {
   const family = `${data && data.app || ''} ${data && data.source || ''}`.toLowerCase();
   return /youtube|jellyfin|spotify|chrome|msedge|edge|firefox|brave|opera|browser/.test(family);
@@ -2781,7 +3023,7 @@ function canLookupTrackArtwork(data) {
 }
 
 function applyExternalArtworkToCurrentTrack(lookupKey, thumbnail) {
-  const thumb = String(thumbnail || '').trim();
+  const thumb = sanitizeMediaThumbnailValue(thumbnail, 'artwork-hydration') || '';
   if (!lookupKey || !thumb) return false;
   const current = mediaCache.data;
   if (!current || !current.active) return false;
@@ -2819,8 +3061,85 @@ function queueMediaArtworkHydration(data) {
     .catch(() => {})
     .finally(() => {
       mediaArtworkLookupInFlight.delete(lookupKey);
-    });
+  });
   mediaArtworkLookupInFlight.set(lookupKey, promise);
+}
+
+function applyMediaSessionThumbnailToCurrentTrack(trackKey, thumbnail) {
+  const thumb = sanitizeMediaThumbnailValue(thumbnail, 'media-session-hydration') || '';
+  if (!trackKey || !thumb) return false;
+  const current = mediaCache.data;
+  if (!current || !current.active) return false;
+  if (mediaItemKey(current) !== trackKey) return false;
+  if (current.thumbnail === thumb) return false;
+
+  const updated = stabilizeLiveMediaPosition({ ...current, thumbnail: thumb });
+  mediaCache = { data: updated, updatedAt: Date.now() };
+  const now = Date.now();
+  if (sseClients.size > 0 && (now - lastMediaSsePushedAt) >= MEDIA_SSE_PUSH_MIN_INTERVAL_MS) {
+    lastMediaSsePushedAt = now;
+    broadcastSSE('media', updated);
+  }
+  return true;
+}
+
+function rememberMediaSessionThumbnailLookup(trackKey, thumbnail) {
+  if (!trackKey) return;
+  if (mediaSessionThumbnailLookupCache.size >= MEDIA_SESSION_THUMBNAIL_LOOKUP_CACHE_MAX) {
+    mediaSessionThumbnailLookupCache.delete(mediaSessionThumbnailLookupCache.keys().next().value);
+  }
+  mediaSessionThumbnailLookupCache.set(trackKey, {
+    thumbnail: thumbnail || null,
+    updatedAt: Date.now(),
+  });
+}
+
+function queueMediaSessionThumbnailHydration(data) {
+  if (!data || !data.active || data.thumbnail) return;
+  if (!isBrowserMediaSource(data)) return;
+  if (isWeakMediaSnapshot(data)) return;
+
+  const trackKey = mediaItemKey(data);
+  if (!trackKey) return;
+
+  const now = Date.now();
+  const cached = mediaSessionThumbnailLookupCache.get(trackKey);
+  if (cached && (now - Number(cached.updatedAt || 0)) <= MEDIA_SESSION_THUMBNAIL_LOOKUP_COOLDOWN_MS) {
+    if (cached.thumbnail) applyMediaSessionThumbnailToCurrentTrack(trackKey, cached.thumbnail);
+    return;
+  }
+
+  if (mediaSessionThumbnailLookupInFlight.has(trackKey)) return;
+  mediaSessionThumbnailLookupInFlight.add(trackKey);
+
+  const lookup = (async () => {
+    let resolvedThumbnail = null;
+    try {
+      const fromAudioCtl = await runAudioCtlJson(['media-info'], 9000);
+      if (fromAudioCtl && fromAudioCtl.ok && fromAudioCtl.data && fromAudioCtl.data.active) {
+        const sampledTrackKey = mediaItemKey(fromAudioCtl.data);
+        if (sampledTrackKey && sampledTrackKey === trackKey) {
+          resolvedThumbnail = sanitizeMediaThumbnailValue(fromAudioCtl.data.thumbnail, 'media-info-hydration');
+          if (resolvedThumbnail) applyMediaSessionThumbnailToCurrentTrack(trackKey, resolvedThumbnail);
+        }
+      }
+      if (!resolvedThumbnail) {
+        diagLog('DEBUG', 'media-thumbnail', 'media-session thumbnail hydration returned no usable thumbnail', {
+          trackKey,
+          available: !!(fromAudioCtl && fromAudioCtl.available),
+          ok: !!(fromAudioCtl && fromAudioCtl.ok),
+        });
+      }
+    } catch {
+      resolvedThumbnail = null;
+      diagLog('DEBUG', 'media-thumbnail', 'media-session thumbnail hydration failed', { trackKey });
+    } finally {
+      rememberMediaSessionThumbnailLookup(trackKey, resolvedThumbnail);
+      mediaSessionThumbnailLookupInFlight.delete(trackKey);
+    }
+  })();
+
+  lookup.catch(() => {});
 }
 
 function shouldSuppressTransientThumbnailSwap(nextData, previousData, previousAgeMs) {
@@ -2838,6 +3157,65 @@ function shouldSuppressTransientThumbnailSwap(nextData, previousData, previousAg
   if (!isBrowserMediaSource(nextData)) return false;
 
   return true;
+}
+
+function clearMediaThumbnailHoldState() {
+  mediaThumbnailHoldState.key = '';
+  mediaThumbnailHoldState.startedAt = 0;
+}
+
+function shouldCarryForwardPreviousThumbnail(nextData, previousData, now = Date.now()) {
+  if (!nextData || !previousData) {
+    clearMediaThumbnailHoldState();
+    return false;
+  }
+  if (!nextData.active || !previousData.active) {
+    clearMediaThumbnailHoldState();
+    return false;
+  }
+  if (nextData.thumbnail) {
+    clearMediaThumbnailHoldState();
+    return false;
+  }
+
+  const previousThumb = previousData.thumbnail || null;
+  if (!previousThumb) {
+    clearMediaThumbnailHoldState();
+    return false;
+  }
+
+  const nextStatus = String(nextData.playbackStatus || '').trim().toLowerCase();
+  if (nextStatus === 'closed' || nextStatus === 'unavailable') {
+    clearMediaThumbnailHoldState();
+    return false;
+  }
+
+  const nextTrackKey = mediaItemKey(nextData);
+  const previousTrackKey = mediaItemKey(previousData);
+  if (nextTrackKey && previousTrackKey && nextTrackKey === previousTrackKey) {
+    clearMediaThumbnailHoldState();
+    return true;
+  }
+
+  const sameApp = String(nextData.app || '').trim().toLowerCase() === String(previousData.app || '').trim().toLowerCase();
+  const bothBrowserLike = isBrowserMediaSource(nextData) && isBrowserMediaSource(previousData);
+  if (!sameApp && !bothBrowserLike) {
+    clearMediaThumbnailHoldState();
+    return false;
+  }
+
+  const previousFamily = `${String(previousData.app || '').trim().toLowerCase()}|${String(previousData.source || '').trim().toLowerCase()}`;
+  const nextFamily = `${String(nextData.app || '').trim().toLowerCase()}|${String(nextData.source || '').trim().toLowerCase()}`;
+  const holdKey = `${previousFamily}->${nextFamily}`;
+  if (mediaThumbnailHoldState.key !== holdKey || !mediaThumbnailHoldState.startedAt) {
+    mediaThumbnailHoldState.key = holdKey;
+    mediaThumbnailHoldState.startedAt = now;
+  }
+
+  const heldForMs = Math.max(0, now - Number(mediaThumbnailHoldState.startedAt || now));
+  if (heldForMs <= MEDIA_THUMBNAIL_MISSING_HOLD_MS) return true;
+  clearMediaThumbnailHoldState();
+  return false;
 }
 
 function clearMediaTransientHoldState() {
@@ -2953,11 +3331,19 @@ function blendHeldMediaSnapshot(nextData, previousData) {
   };
 }
 
-function updateMediaCacheFromStream(raw) {
+function updateMediaCacheFromStream(raw, options = null) {
   if (!raw || typeof raw !== 'object') return;
+  const sourceTag = options && typeof options === 'object' && options.sourceTag
+    ? String(options.sourceTag)
+    : 'media-stream';
+  const now = Date.now();
   const previousData = mediaCache.data;
-  const previousAgeMs = Date.now() - Number(mediaCache.updatedAt || 0);
-  let enriched = mergeMediaArtworkFromCache(raw);
+  const previousAgeMs = now - Number(mediaCache.updatedAt || 0);
+  const sanitizedThumb = sanitizeMediaThumbnailValue(raw.thumbnail, sourceTag);
+  const prepared = sanitizedThumb === (raw.thumbnail || null)
+    ? raw
+    : { ...raw, thumbnail: sanitizedThumb };
+  let enriched = mergeMediaArtworkFromCache(prepared);
 
   // For browser-based media sessions prefer stable external artwork over app icons.
   if (isBrowserMediaSource(enriched) && isLikelyAppIconThumbnail(enriched.thumbnail)) {
@@ -2972,14 +3358,21 @@ function updateMediaCacheFromStream(raw) {
   if (shouldSuppressTransientThumbnailSwap(enriched, previousData, previousAgeMs)) {
     enriched = { ...enriched, thumbnail: previousData.thumbnail };
   }
+  if (shouldCarryForwardPreviousThumbnail(enriched, previousData, now)) {
+    enriched = { ...enriched, thumbnail: previousData.thumbnail };
+  } else if (enriched && enriched.thumbnail) {
+    clearMediaThumbnailHoldState();
+  }
   let stabilized = stabilizeLiveMediaPosition(enriched);
   if (shouldHoldPreviousMediaSnapshot(stabilized, previousData, previousAgeMs)) {
     stabilized = stabilizeLiveMediaPosition(blendHeldMediaSnapshot(stabilized, previousData));
   }
   mediaCache = { data: stabilized, updatedAt: Date.now() };
+  mediaStreamConsecutiveParseErrors = 0;
+  mediaStreamBufferTrimCount = 0;
   queueMediaArtworkHydration(stabilized);
+  queueMediaSessionThumbnailHydration(stabilized);
   mediaPrimaryRetryNotBefore = 0;
-  const now = Date.now();
   if (sseClients.size > 0 && (now - lastMediaSsePushedAt) >= MEDIA_SSE_PUSH_MIN_INTERVAL_MS) {
     lastMediaSsePushedAt = now;
     broadcastSSE('media', stabilized);
@@ -2991,6 +3384,21 @@ function processMediaStreamChunk(chunk) {
   if (!chunk) return;
   mediaStreamBuffer += String(chunk);
   if (mediaStreamBuffer.length > MEDIA_STREAM_MAX_BUFFER_CHARS) {
+    const droppedChars = mediaStreamBuffer.length - MEDIA_STREAM_MAX_BUFFER_CHARS;
+    mediaStreamBufferTrimCount += 1;
+    diagLog('WARN', 'media-stream', 'buffer exceeded max size; trimming tail', {
+      droppedChars,
+      bufferChars: mediaStreamBuffer.length,
+      trimCount: mediaStreamBufferTrimCount,
+      maxChars: MEDIA_STREAM_MAX_BUFFER_CHARS,
+    });
+    if (mediaStreamBufferTrimCount >= MEDIA_STREAM_BUFFER_TRIM_RECYCLE_THRESHOLD) {
+      diagLog('WARN', 'media-stream', 'recycling stream after repeated buffer trims', {
+        trimCount: mediaStreamBufferTrimCount,
+        threshold: MEDIA_STREAM_BUFFER_TRIM_RECYCLE_THRESHOLD,
+      });
+      scheduleMediaStreamRecycle('buffer-trim-overflow');
+    }
     mediaStreamBuffer = mediaStreamBuffer.slice(-MEDIA_STREAM_MAX_BUFFER_CHARS);
   }
   while (true) {
@@ -3001,8 +3409,24 @@ function processMediaStreamChunk(chunk) {
     if (!line) continue;
     try {
       updateMediaCacheFromStream(JSON.parse(line));
-    } catch {
-      // Ignore malformed or partial lines.
+    } catch (error) {
+      mediaStreamConsecutiveParseErrors += 1;
+      if (mediaStreamConsecutiveParseErrors <= 3 || mediaStreamConsecutiveParseErrors % 5 === 0) {
+        diagLog('WARN', 'media-stream', 'failed to parse stream line', {
+          consecutive: mediaStreamConsecutiveParseErrors,
+          lineLength: line.length,
+          error: error && error.message ? error.message : String(error || 'unknown'),
+          snippet: line.slice(0, 220),
+        });
+      }
+      if (mediaStreamConsecutiveParseErrors >= MEDIA_STREAM_PARSE_RECYCLE_THRESHOLD) {
+        diagLog('ERROR', 'media-stream', 'recycling stream after repeated parse failures', {
+          consecutive: mediaStreamConsecutiveParseErrors,
+          threshold: MEDIA_STREAM_PARSE_RECYCLE_THRESHOLD,
+        });
+        mediaStreamConsecutiveParseErrors = 0;
+        scheduleMediaStreamRecycle('parse-failures');
+      }
     }
   }
 }
@@ -3015,6 +3439,11 @@ function waitForMediaStreamSample(timeoutMs = MEDIA_STREAM_WAIT_MS) {
     const timer = setTimeout(() => {
       if (!mediaStreamWaiters.has(waiterId)) return;
       mediaStreamWaiters.delete(waiterId);
+      diagLog('DEBUG', 'media-stream', 'wait for stream sample timed out', {
+        timeoutMs: Math.max(40, Number(timeoutMs) || MEDIA_STREAM_WAIT_MS),
+        cacheAgeMs: Date.now() - Number(mediaCache.updatedAt || 0),
+        waitersPending: mediaStreamWaiters.size,
+      });
       resolve(false);
     }, Math.max(40, Number(timeoutMs) || MEDIA_STREAM_WAIT_MS));
     mediaStreamWaiters.set(waiterId, hasSample => {
@@ -3033,7 +3462,12 @@ function stopMediaStream() {
   mediaStreamProcess = null;
   mediaStreamStarting = false;
   mediaStreamBuffer = '';
+  mediaStreamConsecutiveParseErrors = 0;
+  mediaStreamBufferTrimCount = 0;
   resolveMediaStreamWaiters(false);
+  diagLog('INFO', 'media-stream', 'stopping media stream process', {
+    pid: proc && proc.pid ? proc.pid : null,
+  });
   if (proc && !proc.killed) {
     try { proc.kill(); } catch {}
   }
@@ -3041,6 +3475,7 @@ function stopMediaStream() {
 
 function scheduleMediaStreamRecycle(reason = 'manual') {
   if (mediaStreamRecycleTimer) return;
+  diagLog('WARN', 'media-stream', 'scheduled media stream recycle', { reason });
   mediaStreamRecycleTimer = setTimeout(() => {
     mediaStreamRecycleTimer = null;
     stopMediaStream();
@@ -3057,6 +3492,13 @@ function ensureMediaStreamRunning() {
 
   mediaStreamStarting = true;
   mediaStreamBuffer = '';
+  mediaStreamConsecutiveParseErrors = 0;
+  mediaStreamBufferTrimCount = 0;
+  diagLog('INFO', 'media-stream', 'spawning media stream process', {
+    dll: AUDIOCTL_DLL,
+    intervalMs: MEDIA_STREAM_INTERVAL_MS,
+    parentPid: process.pid,
+  });
   const child = spawn(DOTNET_BIN, [AUDIOCTL_DLL, 'media-stream', String(MEDIA_STREAM_INTERVAL_MS), String(process.pid)], {
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -3070,24 +3512,45 @@ function ensureMediaStreamRunning() {
 
   if (child.stderr) {
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', () => {});
+    child.stderr.on('data', chunk => {
+      const text = String(chunk || '').trim();
+      if (!text) return;
+      diagLog('WARN', 'media-stream.stderr', 'AudioCtl media-stream stderr', {
+        pid: child.pid || null,
+        text,
+      });
+    });
   }
 
   child.on('spawn', () => {
     mediaStreamStarting = false;
     mediaStreamRestartNotBefore = 0;
+    diagLog('INFO', 'media-stream', 'media stream process started', {
+      pid: child.pid || null,
+    });
   });
 
-  child.on('error', () => {
+  child.on('error', error => {
     mediaStreamStarting = false;
     mediaStreamRestartNotBefore = Date.now() + MEDIA_STREAM_RESTART_BACKOFF_MS;
     if (mediaStreamProcess === child) mediaStreamProcess = null;
+    diagLog('ERROR', 'media-stream', 'media stream process error', {
+      pid: child.pid || null,
+      backoffMs: MEDIA_STREAM_RESTART_BACKOFF_MS,
+      error: error && error.message ? error.message : String(error || 'unknown'),
+    });
   });
 
-  child.on('close', () => {
+  child.on('close', (code, signal) => {
     if (mediaStreamProcess === child) mediaStreamProcess = null;
     mediaStreamStarting = false;
     mediaStreamRestartNotBefore = Date.now() + MEDIA_STREAM_RESTART_BACKOFF_MS;
+    diagLog('WARN', 'media-stream', 'media stream process closed', {
+      pid: child.pid || null,
+      code,
+      signal: signal || null,
+      backoffMs: MEDIA_STREAM_RESTART_BACKOFF_MS,
+    });
   });
 }
 
@@ -3112,6 +3575,11 @@ async function getMediaInfo(force = false) {
       const age = Date.now() - Number(mediaCache.updatedAt || 0);
       return liveMediaSnapshot(mediaCache.data, age);
     }
+    diagLog('WARN', 'media', 'stream sample unavailable; using fallback path', {
+      force,
+      cacheAgeMs: Date.now() - Number(mediaCache.updatedAt || 0),
+      streamProcessPid: mediaStreamProcess && mediaStreamProcess.pid ? mediaStreamProcess.pid : null,
+    });
 
     const now = Date.now();
     if (!force && now < mediaPrimaryRetryNotBefore) {
@@ -3136,6 +3604,10 @@ async function getMediaInfo(force = false) {
         resolvedFastFallback = stabilizeLiveMediaPosition(blendHeldMediaSnapshot(resolvedFastFallback, previousData));
       }
       mediaCache = { data: resolvedFastFallback, updatedAt: Date.now() };
+      diagLog('WARN', 'media', 'using fast fallback during retry backoff', {
+        retryNotBefore: mediaPrimaryRetryNotBefore,
+        fallbackStatus: resolvedFastFallback && resolvedFastFallback.playbackStatus ? resolvedFastFallback.playbackStatus : null,
+      });
       return resolvedFastFallback;
     }
 
@@ -3143,16 +3615,28 @@ async function getMediaInfo(force = false) {
       const sampled = await sampleMediaCache(true);
       if (sampled && mediaCache.data) {
         const age = Date.now() - Number(mediaCache.updatedAt || 0);
+        diagLog('INFO', 'media', 'recovered from direct media-info sample', {
+          force,
+          ageMs: age,
+        });
         return liveMediaSnapshot(mediaCache.data, age);
       }
       throw new Error('Media sample unavailable');
     } catch (e) {
       const message = String(e && e.message || '');
       mediaPrimaryRetryNotBefore = Date.now() + MEDIA_PRIMARY_RETRY_BACKOFF_MS;
+      diagLog('ERROR', 'media', 'media primary sampling failed', {
+        message,
+        retryBackoffMs: MEDIA_PRIMARY_RETRY_BACKOFF_MS,
+      });
       const cached = mediaCache.data;
       const cachedUnavailable = !cached || String(cached.playbackStatus || '').toLowerCase() === 'unavailable';
       if (cached && !cachedUnavailable) {
         const age = Date.now() - Number(mediaCache.updatedAt || 0);
+        diagLog('WARN', 'media', 'serving cached media snapshot after sampling failure', {
+          ageMs: age,
+          playbackStatus: cached.playbackStatus || null,
+        });
         return liveMediaSnapshot(cached, age);
       }
       const fallback = await getMediaFallback(message);
@@ -3164,6 +3648,11 @@ async function getMediaInfo(force = false) {
         resolvedFallback = stabilizeLiveMediaPosition(blendHeldMediaSnapshot(resolvedFallback, previousData));
       }
       mediaCache = { data: resolvedFallback, updatedAt: Date.now() };
+      diagLog('WARN', 'media', 'serving computed fallback media snapshot', {
+        status: resolvedFallback && resolvedFallback.playbackStatus ? resolvedFallback.playbackStatus : null,
+        app: resolvedFallback && resolvedFallback.app ? resolvedFallback.app : null,
+        error: resolvedFallback && resolvedFallback.error ? resolvedFallback.error : message,
+      });
       return resolvedFallback;
     } finally {
       mediaPending = null;
@@ -3177,15 +3666,34 @@ async function sampleMediaCache(includeArtwork = false) {
   mediaSampleInFlight = true;
   try {
     const fromAudioCtl = await runAudioCtlJson(['media-info'], includeArtwork ? 9000 : 7000);
-    if (!(fromAudioCtl && fromAudioCtl.ok && fromAudioCtl.data)) return false;
-    const data = fromAudioCtl.data;
+    if (!(fromAudioCtl && fromAudioCtl.ok && fromAudioCtl.data)) {
+      diagLog('WARN', 'media', 'media-info returned no usable data', {
+        includeArtwork,
+        available: !!(fromAudioCtl && fromAudioCtl.available),
+        code: fromAudioCtl && Object.prototype.hasOwnProperty.call(fromAudioCtl, 'code') ? fromAudioCtl.code : null,
+      });
+      return false;
+    }
+    const data = fromAudioCtl.data && typeof fromAudioCtl.data === 'object'
+      ? { ...fromAudioCtl.data, thumbnail: sanitizeMediaThumbnailValue(fromAudioCtl.data.thumbnail, 'media-info') }
+      : fromAudioCtl.data;
     const status = String(data && data.playbackStatus || '').toLowerCase();
-    if (status === 'unavailable' && data && data.error) return false;
+    if (status === 'unavailable' && data && data.error) {
+      diagLog('WARN', 'media', 'media-info unavailable status received', {
+        includeArtwork,
+        error: data.error,
+      });
+      return false;
+    }
     const hydrated = includeArtwork ? await hydrateArtwork(data) : data;
-    updateMediaCacheFromStream(hydrated);
+    updateMediaCacheFromStream(hydrated, { sourceTag: 'media-info' });
     mediaPrimaryRetryNotBefore = 0;
     return true;
-  } catch {
+  } catch (error) {
+    diagLog('ERROR', 'media', 'media-info sampling threw exception', {
+      includeArtwork,
+      error: error && error.message ? error.message : String(error || 'unknown'),
+    });
     return false;
   } finally {
     mediaSampleInFlight = false;
@@ -3528,7 +4036,6 @@ function buildAudioInfoFromRows(rows) {
     if (!rawName && !windowTitle) return;
     if (/audiodg|svchost/.test(combined)) return;
     if (/^(?:audiodg|svchost(?:\.exe)?|sihost(?:\.exe)?)$/.test(baseProcess)) return;
-    if (/^qtwebengineprocess(?:\.exe)?$/.test(baseProcess)) return;
     const appKey = normalizeMixerAppKey(rawName || id);
     if (!appKey) return;
 
@@ -3651,8 +4158,6 @@ function buildAudioInfoFromAudioCtlSnapshot(snapshot) {
     const combined = `${rawLabel} ${windowTitle}`.toLowerCase();
     if (/audiodg|svchost/.test(combined) && !/system sounds/.test(combined)) return;
     if (/^(?:audiodg|svchost(?:\.exe)?|sihost(?:\.exe)?)$/.test(baseProcess)) return;
-    if (/^qtwebengineprocess(?:\.exe)?$/.test(baseProcess)) return;
-
     const appKey = buildAudioCtlMixerAppKey(rawLabel, rawName, id, windowTitle);
     if (!appKey) return;
 
@@ -3837,6 +4342,9 @@ function stopAudioActivityStream() {
   audioActivityStreamBuffer = '';
   audioActivityStreamStarting = false;
   resolveAudioActivityStreamWaiters(false);
+  diagLog('INFO', 'audio-activity-stream', 'stopping audio activity stream process', {
+    pid: proc && proc.pid ? proc.pid : null,
+  });
   if (proc && !proc.killed) {
     try { proc.kill(); } catch {}
   }
@@ -3849,6 +4357,11 @@ function ensureAudioActivityStreamRunning() {
 
   audioActivityStreamStarting = true;
   audioActivityStreamBuffer = '';
+  diagLog('INFO', 'audio-activity-stream', 'spawning audio activity stream process', {
+    dll: AUDIOCTL_DLL,
+    intervalMs: AUDIO_ACTIVITY_STREAM_INTERVAL_MS,
+    parentPid: process.pid,
+  });
   const child = spawn(DOTNET_BIN, [AUDIOCTL_DLL, 'activity-stream', String(AUDIO_ACTIVITY_STREAM_INTERVAL_MS), String(process.pid)], {
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -3863,28 +4376,49 @@ function ensureAudioActivityStreamRunning() {
 
   if (child.stderr) {
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', () => {});
+    child.stderr.on('data', chunk => {
+      const text = String(chunk || '').trim();
+      if (!text) return;
+      diagLog('WARN', 'audio-activity-stream.stderr', 'AudioCtl activity-stream stderr', {
+        pid: child.pid || null,
+        text,
+      });
+    });
   }
 
   child.on('spawn', () => {
     audioActivityStreamStarting = false;
     audioActivityStreamRestartNotBefore = 0;
+    diagLog('INFO', 'audio-activity-stream', 'audio activity stream process started', {
+      pid: child.pid || null,
+    });
   });
 
-  child.on('error', () => {
+  child.on('error', error => {
     audioActivityStreamStarting = false;
     audioActivityStreamRestartNotBefore = Date.now() + AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS;
     if (audioActivityStreamProcess === child) {
       audioActivityStreamProcess = null;
     }
+    diagLog('ERROR', 'audio-activity-stream', 'audio activity stream process error', {
+      pid: child.pid || null,
+      backoffMs: AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS,
+      error: error && error.message ? error.message : String(error || 'unknown'),
+    });
   });
 
-  child.on('close', () => {
+  child.on('close', (code, signal) => {
     if (audioActivityStreamProcess === child) {
       audioActivityStreamProcess = null;
     }
     audioActivityStreamStarting = false;
     audioActivityStreamRestartNotBefore = Date.now() + AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS;
+    diagLog('WARN', 'audio-activity-stream', 'audio activity stream process closed', {
+      pid: child.pid || null,
+      code,
+      signal: signal || null,
+      backoffMs: AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS,
+    });
   });
 }
 
@@ -4061,6 +4595,7 @@ async function ensureAudioCtlAvailable() {
   if (audioCtlReady && fs.existsSync(AUDIOCTL_DLL)) return true;
   if (!fs.existsSync(AUDIOCTL_PROJECT)) return false;
   if (audioCtlBuildInFlight) return audioCtlBuildInFlight;
+  diagLog('INFO', 'audioctl', 'building AudioCtl project', { project: AUDIOCTL_PROJECT });
   audioCtlBuildInFlight = execFilePromise(DOTNET_BIN, ['build', AUDIOCTL_PROJECT, '-c', 'Release'], {
     cwd: __dirname,
     timeout: 120000,
@@ -4068,10 +4603,17 @@ async function ensureAudioCtlAvailable() {
   }).then(() => {
     audioCtlReady = fs.existsSync(AUDIOCTL_DLL);
     if (audioCtlReady) console.log('[AudioCtl] Ready:', AUDIOCTL_DLL);
+    diagLog('INFO', 'audioctl', 'AudioCtl build completed', {
+      ready: audioCtlReady,
+      dll: AUDIOCTL_DLL,
+    });
     return audioCtlReady;
   }).catch(error => {
     audioCtlReady = false;
     console.warn('[AudioCtl] Build failed:', error && error.message ? error.message : error);
+    diagLog('ERROR', 'audioctl', 'AudioCtl build failed', {
+      error: error && error.message ? error.message : String(error || 'unknown'),
+    });
     return false;
   }).finally(() => {
     audioCtlBuildInFlight = null;
@@ -4090,6 +4632,12 @@ async function runAudioCtl(args, timeout = 2500) {
     // Code 2 = no matching app session; caller can safely fall back to SoundVolumeView.
     if (code !== 2) {
       console.warn('[AudioCtl] Command failed:', args.join(' '), error && error.message ? error.message : error);
+      diagLog('WARN', 'audioctl', 'AudioCtl command failed', {
+        args,
+        timeout,
+        code,
+        error: error && error.message ? error.message : String(error || 'unknown'),
+      });
     }
     return { ok: false, available: true, code };
   }
@@ -4099,7 +4647,11 @@ async function runAudioCtlJson(args, timeout = 3000) {
   const available = await ensureAudioCtlAvailable();
   if (!available) return { ok: false, available: false, code: null, data: null };
   try {
-    const { stdout } = await execFilePromise(DOTNET_BIN, [AUDIOCTL_DLL, ...args], { timeout, maxBuffer: 1024 * 1024 });
+    const primaryArg = Array.isArray(args) && args.length ? String(args[0]).toLowerCase() : '';
+    const maxBuffer = primaryArg === 'media-info'
+      ? (8 * 1024 * 1024)
+      : (1024 * 1024);
+    const { stdout } = await execFilePromise(DOTNET_BIN, [AUDIOCTL_DLL, ...args], { timeout, maxBuffer });
     return { ok: true, available: true, code: 0, data: parseJsonOutput(stdout) };
   } catch (error) {
     const code = Number.isFinite(Number(error && error.code)) ? Number(error.code) : null;
@@ -4109,6 +4661,14 @@ async function runAudioCtlJson(args, timeout = 3000) {
     // and let upper layers handle fallback.
     if (code !== 2 && !isMediaInfo) {
       console.warn('[AudioCtl] JSON command failed:', args.join(' '), error && error.message ? error.message : error);
+    }
+    if (code !== 2) {
+      diagLog(isMediaInfo ? 'WARN' : 'ERROR', 'audioctl', 'AudioCtl JSON command failed', {
+        args,
+        timeout,
+        code,
+        error: error && error.message ? error.message : String(error || 'unknown'),
+      });
     }
     return { ok: false, available: true, code, data: null };
   }
@@ -5164,21 +5724,17 @@ const server = http.createServer(async (req, res) => {
       } else {
         ({ level } = JSON.parse(await readBody(req)));
       }
-      const vol = Math.max(0, Math.min(100, parseInt(level)));
-      const fast = await runAudioCtl(['set-master', String(vol)], 1800);
-      if (fast.ok) {
-        setSpeakerAudioOverride({ volume: vol });
-        json({ ok: true, level: vol });
+      const parsedLevel = parseInt(level, 10);
+      const vol = Number.isFinite(parsedLevel) ? Math.max(0, Math.min(100, parsedLevel)) : 0;
+      setSpeakerAudioOverride({ volume: vol });
+      if (req.method === 'POST') {
+        queueSpeakerVolumeLevel(vol);
+        json({ ok: true, level: vol, queued: true });
         return;
       }
-      if (!areFallbacksEnabled()) { sendFallbackDisabled(res, '/volume/set'); return; }
-      execFile(SVV, ['/SetVolume', 'DefaultRenderDevice', String(vol)], e => {
-        if (e) err500(e.message);
-        else {
-          setSpeakerAudioOverride({ volume: vol });
-          json({ ok: true, level: vol });
-        }
-      });
+      const applied = await applySpeakerVolumeLevel(vol);
+      if (!applied) { sendFallbackDisabled(res, '/volume/set'); return; }
+      json({ ok: true, level: vol });
     } catch (e) { err500(e.message); }
 
   } else if (reqPath === '/audio/app/volume' && req.method === 'POST') {
@@ -5186,23 +5742,11 @@ const server = http.createServer(async (req, res) => {
       const { id, level } = JSON.parse(await readBody(req));
       const target = sanitizeAudioSessionId(id);
       if (!target) { res.writeHead(400); res.end('Invalid app id'); return; }
-      const vol = Math.max(0, Math.min(100, parseInt(level, 10)));
-      const fast = await runAudioCtl(['set-app-volume', target, String(vol)], 2200);
-      if (fast.ok) {
-        setAppAudioOverride(target, { volume: vol });
-        json({ ok: true, id: target, level: vol });
-        return;
-      }
-      if (!areFallbacksEnabled()) { sendFallbackDisabled(res, '/audio/app/volume'); return; }
-      const svvTarget = await resolveSvvAppTarget(target);
-      if (!svvTarget) { err500('Unable to resolve app id'); return; }
-      execFile(SVV, ['/SetVolume', svvTarget, String(vol)], e => {
-        if (e) err500(e.message);
-        else {
-          setAppAudioOverride(target, { volume: vol });
-          json({ ok: true, id: target, level: vol });
-        }
-      });
+      const parsedLevel = parseInt(level, 10);
+      const vol = Number.isFinite(parsedLevel) ? Math.max(0, Math.min(100, parsedLevel)) : 0;
+      setAppAudioOverride(target, { volume: vol });
+      queueAppVolumeLevel(target, vol);
+      json({ ok: true, id: target, level: vol, queued: true });
     } catch (e) { err500(e.message); }
 
   } else if (reqPath === '/audio/app/mute' && req.method === 'POST') {
@@ -5237,21 +5781,17 @@ const server = http.createServer(async (req, res) => {
       } else {
         ({ level } = JSON.parse(await readBody(req)));
       }
-      const vol = Math.max(0, Math.min(100, parseInt(level)));
-      const fast = await runAudioCtl(['set-capture', String(vol)], 1800);
-      if (fast.ok) {
-        setMicAudioOverride({ volume: vol });
-        json({ ok: true, level: vol });
+      const parsedLevel = parseInt(level, 10);
+      const vol = Number.isFinite(parsedLevel) ? Math.max(0, Math.min(100, parsedLevel)) : 0;
+      setMicAudioOverride({ volume: vol });
+      if (req.method === 'POST') {
+        queueMicVolumeLevel(vol);
+        json({ ok: true, level: vol, queued: true });
         return;
       }
-      if (!areFallbacksEnabled()) { sendFallbackDisabled(res, '/mic/volume'); return; }
-      execFile(SVV, ['/SetVolume', 'DefaultCaptureDevice', String(vol)], e => {
-        if (e) err500(e.message);
-        else {
-          setMicAudioOverride({ volume: vol });
-          json({ ok: true, level: vol });
-        }
-      });
+      const applied = await applyMicVolumeLevel(vol);
+      if (!applied) { sendFallbackDisabled(res, '/mic/volume'); return; }
+      json({ ok: true, level: vol });
     } catch (e) { err500(e.message); }
 
   } else if (reqPath === '/speaker/mute' && (req.method === 'POST' || req.method === 'GET')) {
@@ -5693,7 +6233,18 @@ const server = http.createServer(async (req, res) => {
     res.write(':connected\n\n');
 
     sseClients.add(res);
-    req.on('close', () => sseClients.delete(res));
+    diagLog('INFO', 'sse', 'client connected', {
+      remoteAddress: req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : null,
+      clients: sseClients.size,
+      userAgent: req.headers['user-agent'] || '',
+      referer: req.headers.referer || '',
+    });
+    req.on('close', () => {
+      sseClients.delete(res);
+      diagLog('INFO', 'sse', 'client disconnected', {
+        clients: sseClients.size,
+      });
+    });
 
     // Push current state immediately so the client doesn't wait for the first tick.
     Promise.all([
@@ -5710,6 +6261,22 @@ const server = http.createServer(async (req, res) => {
       res.write(now);
     }).catch(() => {});
 
+  } else if (reqPath === '/diag/log' && req.method === 'POST') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const channel = String(body && body.source || 'client').trim().slice(0, 80) || 'client';
+      const levelRaw = String(body && body.level || 'INFO').trim().toUpperCase();
+      const level = ['DEBUG', 'INFO', 'WARN', 'ERROR'].includes(levelRaw) ? levelRaw : 'INFO';
+      const message = String(body && body.message || '').replace(/\r?\n/g, ' ').trim().slice(0, 400);
+      const details = body && Object.prototype.hasOwnProperty.call(body, 'details') ? body.details : null;
+      if (message) {
+        diagLog(level, `client:${channel}`, message, details);
+      }
+      json({ ok: true });
+    } catch (error) {
+      err500(error && error.message ? error.message : 'Invalid diagnostic payload');
+    }
+
   } else {
     res.writeHead(404); res.end();
   }
@@ -5718,12 +6285,25 @@ const server = http.createServer(async (req, res) => {
 function _startListen(host) {
   server.listen(3030, host, () => {
     console.log('Widget server running on http://' + host + ':3030');
+    diagLog('INFO', 'server', 'server listening', {
+      host,
+      port: 3030,
+      pid: process.pid,
+      node: process.version,
+      diagLogFile: DIAG_LOG_FILE,
+    });
     getAudioInfo().then(info => {
       if (info && info.mic && typeof info.mic.muted === 'boolean') isMuted = info.mic.muted;
       console.log('Speaker cache:', cachedSpeakerId);
       console.log('Mic cache:   ', cachedMicId);
       console.log('Mic muted:   ', isMuted);
       console.log('Fallbacks:   ', areFallbacksEnabled() ? 'enabled' : 'disabled');
+      diagLog('INFO', 'server', 'audio init snapshot', {
+        speakerCache: cachedSpeakerId,
+        micCache: cachedMicId,
+        micMuted: isMuted,
+        fallbacksEnabled: areFallbacksEnabled(),
+      });
     }).catch(e => console.error('Audio init failed:', e.message));
   });
 }
@@ -5745,6 +6325,7 @@ let shutdownRequested = false;
 function shutdownServer(reason = 'signal', exitCode = 0) {
   if (shutdownRequested) return;
   shutdownRequested = true;
+  diagLog('WARN', 'server', 'shutdown requested', { reason, exitCode });
   try {
     for (const res of sseClients) {
       try { res.end(); } catch {}
@@ -5769,10 +6350,19 @@ process.on('SIGBREAK', () => shutdownServer('SIGBREAK', 0));
 process.on('SIGHUP', () => shutdownServer('SIGHUP', 0));
 process.on('uncaughtException', err => {
   try { console.error('[Server] uncaughtException:', err && err.stack ? err.stack : err); } catch {}
+  diagLog('ERROR', 'server', 'uncaughtException', {
+    message: err && err.message ? err.message : String(err || 'unknown'),
+    stack: err && err.stack ? err.stack : null,
+  });
   shutdownServer('uncaughtException', 1);
 });
 process.on('unhandledRejection', reason => {
   try { console.error('[Server] unhandledRejection:', reason); } catch {}
+  diagLog('ERROR', 'server', 'unhandledRejection', {
+    reason: typeof reason === 'string'
+      ? reason
+      : (reason && reason.message ? reason.message : String(reason || 'unknown')),
+  });
   shutdownServer('unhandledRejection', 1);
 });
 process.on('exit', () => {

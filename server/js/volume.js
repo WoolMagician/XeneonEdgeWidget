@@ -20,6 +20,22 @@ let speakerMuteLockUntil = 0;
 let micVolumePendingLevel = null;
 let micVolumeFlushTimer = null;
 let micVolumeInFlight = false;
+let speakerSliderInteracting = false;
+let micSliderInteracting = false;
+let lastSpeakerSliderInputAt = 0;
+let lastMicSliderInputAt = 0;
+let speakerVolumeLockedLevel = null;
+let speakerVolumeLockUntil = 0;
+let micVolumeLockedLevel = null;
+let micVolumeLockUntil = 0;
+let appMixerRenderDeferredTimer = null;
+let appMixerRenderPendingApps = null;
+let lastAppMixerSliderInputAt = 0;
+const appMixerSliderInteractingIds = new Set();
+const appMixerLockedVolumes = new Map();
+const appMixerLockedMutes = new Map();
+const appMixerMuteInFlight = new Set();
+const appMixerMuteDesiredStates = new Map();
 let audioActivityPollTimer = null;
 let audioActivityPollInFlight = false;
 let audioActivityAnimFrame = 0;
@@ -35,16 +51,24 @@ const AUDIO_VU_ACTIVITY_STALE_MS = 220;
 const AUDIO_VU_STALE_MS = 420;
 const AUDIO_VU_TRIM_MS = 2200;
 const AUDIO_VU_SILENCE_FLOOR = 2;
+const APP_MIXER_RENDER_DEFER_MS = 140;
+const VOLUME_INTERACTION_IDLE_MS = 320;
+const VOLUME_LEVEL_LOCK_MS = 1600;
+const VOLUME_POST_DEBOUNCE_MS = 55;
+const APP_MIXER_VOLUME_LOCK_MS = 1600;
+const APP_MIXER_MUTE_LOCK_MS = 5000;
 
 const APP_MUTE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63Zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71ZM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3ZM12 4 9.91 6.09 12 8.18V4Z"/></svg>';
 const APP_UNMUTE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3Zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02ZM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77 0-4.28-2.99-7.86-7-8.77Z"/></svg>';
 const SYSTEM_SOUNDS_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7v4.2l-1.4 2.1A1 1 0 0 0 4.4 17h15.2a1 1 0 0 0 .8-1.7L19 13.2V9a7 7 0 0 0-7-7Zm0 20a3 3 0 0 0 2.82-2H9.18A3 3 0 0 0 12 22Z"/></svg>';
 const WHATSAPP_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="#25D366"/><path fill="#fff" d="M17.2 14.8c-.2-.1-1.4-.7-1.6-.7-.2-.1-.4-.1-.5.1-.2.2-.6.7-.8.8-.1.1-.3.1-.5 0-.2-.1-1-.4-1.9-1.2-.7-.6-1.1-1.3-1.3-1.5-.1-.2 0-.3.1-.4.1-.1.2-.3.3-.4.1-.1.1-.2.2-.4.1-.1 0-.3 0-.4 0-.1-.5-1.3-.7-1.7-.2-.5-.4-.4-.5-.4h-.4c-.1 0-.4.1-.5.3-.2.2-.7.7-.7 1.7s.7 2.1.8 2.2c.1.1 1.4 2.2 3.4 3 .5.2.9.4 1.2.5.5.1 1 .1 1.4.1.4-.1 1.4-.6 1.6-1.2.2-.6.2-1.1.1-1.2-.1 0-.3-.1-.5-.2Z"/></svg>';
 const APP_MIXER_SLOT_COUNT = 8;
-const MIXER_GENERIC_ICON_TOKENS = new Set(['chrome', 'msedge', 'edge', 'firefox', 'brave', 'opera', 'browser']);
+const MIXER_GENERIC_ICON_TOKENS = new Set(['chrome', 'msedge', 'edge', 'firefox', 'brave', 'opera', 'browser', 'qtwebengineprocess']);
+const APP_MIXER_FILTERED_SESSION_RE = /\bqtwebengine(?:process)?(?:\.exe)?\b/i;
 const MIXER_ICON_REFRESH_INTERVAL_MS = 2500;
 const MIXER_PROCESS_ICON_REFRESH_INTERVAL_MS = 1300;
 const MIXER_MEDIA_SERVICE_ICON_BY_TOKEN = Object.freeze({
+  jellyfin: 'https://upload.wikimedia.org/wikipedia/commons/4/41/Jellyfin_-_icon-transparent.svg',
   youtube: 'https://www.google.com/s2/favicons?domain=youtube.com&sz=64',
   'youtube-music': 'https://www.google.com/s2/favicons?domain=music.youtube.com&sz=64',
 });
@@ -226,11 +250,14 @@ function ensureAudioActivityPolling() {
 
 function onSliderInput(v) {
   const level = parseInt(v, 10);
+  lastSpeakerSliderInputAt = Date.now();
+  speakerVolumeLockedLevel = Math.max(0, Math.min(100, Number(level) || 0));
+  speakerVolumeLockUntil = lastSpeakerSliderInputAt + VOLUME_LEVEL_LOCK_MS;
   if (volVal) volVal.textContent = level + '%';
   refreshSlider(level);
   speakerVolumePendingLevel = level;
   clearTimeout(speakerVolumeFlushTimer);
-  speakerVolumeFlushTimer = setTimeout(flushSpeakerVolumeQueue, 35);
+  speakerVolumeFlushTimer = setTimeout(flushSpeakerVolumeQueue, VOLUME_POST_DEBOUNCE_MS);
 }
 
 async function flushSpeakerVolumeQueue() {
@@ -310,11 +337,117 @@ function applySpeakerMute(m) {
   if (spkIconOff) spkIconOff.style.display = speakerMuted ? '' : 'none';
 }
 
+function setAppMixerSliderInteracting(id, active) {
+  const key = String(id || '').trim();
+  if (!key) return;
+  if (active) {
+    appMixerSliderInteractingIds.add(key);
+    lastAppMixerSliderInputAt = Date.now();
+    return;
+  }
+  appMixerSliderInteractingIds.delete(key);
+}
+
+function setAppMixerVolumeLock(id, level, lockUntil = 0) {
+  const key = String(id || '').trim();
+  if (!key) return;
+  const safeLevel = clampPercent(level);
+  const until = Number(lockUntil) || (Date.now() + APP_MIXER_VOLUME_LOCK_MS);
+  appMixerLockedVolumes.set(key, { level: safeLevel, lockUntil: until });
+}
+
+function resolveAppMixerVolume(id, incomingLevel, now = Date.now()) {
+  const key = String(id || '').trim();
+  const incoming = clampPercent(incomingLevel);
+  if (!key) return incoming;
+  const lock = appMixerLockedVolumes.get(key);
+  if (!lock) return incoming;
+  if (incoming === clampPercent(lock.level)) {
+    appMixerLockedVolumes.delete(key);
+    return incoming;
+  }
+  if (now < Number(lock.lockUntil || 0)) {
+    return clampPercent(lock.level);
+  }
+  appMixerLockedVolumes.delete(key);
+  return incoming;
+}
+
+function setAppMixerMuteLock(id, muted, lockUntil = 0) {
+  const key = String(id || '').trim();
+  if (!key) return;
+  const until = Number(lockUntil) || (Date.now() + APP_MIXER_MUTE_LOCK_MS);
+  appMixerLockedMutes.set(key, { muted: !!muted, lockUntil: until });
+}
+
+function clearAppMixerMuteLock(id) {
+  const key = String(id || '').trim();
+  if (!key) return;
+  appMixerLockedMutes.delete(key);
+}
+
+function resolveAppMixerMute(id, incomingMuted, now = Date.now()) {
+  const key = String(id || '').trim();
+  const incoming = !!incomingMuted;
+  if (!key) return incoming;
+  const lock = appMixerLockedMutes.get(key);
+  if (!lock) return incoming;
+  if (incoming === !!lock.muted) {
+    appMixerLockedMutes.delete(key);
+    return incoming;
+  }
+  if (now < Number(lock.lockUntil || 0)) {
+    return !!lock.muted;
+  }
+  appMixerLockedMutes.delete(key);
+  return incoming;
+}
+
+function isAppMixerSliderInteracting() {
+  if (appMixerSliderInteractingIds.size > 0) return true;
+  return (Date.now() - Number(lastAppMixerSliderInputAt || 0)) <= VOLUME_INTERACTION_IDLE_MS;
+}
+
+function isAnyVolumeSliderInteracting() {
+  const now = Date.now();
+  const active = document.activeElement;
+  return !!(
+    speakerSliderInteracting
+    || micSliderInteracting
+    || isAppMixerSliderInteracting()
+    || ((now - Number(lastSpeakerSliderInputAt || 0)) <= VOLUME_INTERACTION_IDLE_MS)
+    || ((now - Number(lastMicSliderInputAt || 0)) <= VOLUME_INTERACTION_IDLE_MS)
+    || (volSlider && active === volSlider)
+    || (micVolSlider && active === micVolSlider)
+    || (active && active.classList && active.classList.contains('app-mixer-slider'))
+  );
+}
+
+function scheduleDeferredAppMixerRender(apps) {
+  appMixerRenderPendingApps = apps;
+  if (appMixerRenderDeferredTimer) {
+    clearTimeout(appMixerRenderDeferredTimer);
+  }
+  appMixerRenderDeferredTimer = setTimeout(() => {
+    appMixerRenderDeferredTimer = null;
+    if (isAnyVolumeSliderInteracting()) {
+      scheduleDeferredAppMixerRender(appMixerRenderPendingApps);
+      return;
+    }
+    const pending = appMixerRenderPendingApps;
+    appMixerRenderPendingApps = null;
+    renderAppMixer(pending);
+  }, APP_MIXER_RENDER_DEFER_MS);
+}
+
 function normalizeAudioApps(data) {
   if (!Array.isArray(data)) return [];
   return data
     .filter(item => item && item.id)
-    .filter(item => !/qtwebengineprocess(?:\.exe)?/i.test(String(item.id || item.label || item.name || '')))
+    .filter(item => {
+      const merged = `${String(item.id || '')} ${String(item.label || '')} ${String(item.name || '')} ${String(item.title || '')}`;
+      return !APP_MIXER_FILTERED_SESSION_RE.test(merged);
+    })
     .map(item => ({
       id: String(item.id),
       name: String(item.name || item.label || item.title || 'App').trim() || 'App',
@@ -408,6 +541,7 @@ function normalizeMixerHostToken(value) {
 function detectMediaServiceTokenFromText(value) {
   const merged = String(value || '').toLowerCase();
   if (!merged) return '';
+  if (/\bjellyfin\b|jellyfin\.local/.test(merged)) return 'jellyfin';
   if (/youtube\s*music|music\.youtube\.com|ytmusic|cinhimbn[a-z]*ghhklpknlkffjgod/.test(merged)) return 'youtube-music';
   if (/youtube/.test(merged)) return 'youtube';
   return '';
@@ -416,10 +550,12 @@ function detectMediaServiceTokenFromText(value) {
 function detectMediaServiceTokenForApp(app, presentation) {
   const token = String(presentation && presentation.iconToken || '').toLowerCase();
   if (!MIXER_GENERIC_ICON_TOKENS.has(token)) return '';
+  const isQtWebEngineHost = token === 'qtwebengineprocess';
 
   if (mediaData && mediaData.active) {
     const mediaSourceToken = normalizeMixerHostToken(mediaData.source || mediaData.app || '');
-    if (!mediaSourceToken || mediaSourceToken === token) {
+    const allowCrossSourceService = isQtWebEngineHost && mediaSourceToken === 'jellyfin';
+    if (!mediaSourceToken || mediaSourceToken === token || allowCrossSourceService) {
       const byMedia = detectMediaServiceTokenFromText(
         `${String(mediaData.app || '')} ${String(mediaData.source || '')} ${String(mediaData.title || '')}`,
       );
@@ -443,6 +579,9 @@ function resolveBrowserMediaContext(app, presentation) {
   const serviceToken = detectMediaServiceTokenForApp(app, presentation);
   if (!serviceToken) return null;
 
+  if (serviceToken === 'jellyfin') {
+    return { displayName: 'Jellyfin', iconSrc: MIXER_MEDIA_SERVICE_ICON_BY_TOKEN.jellyfin || '' };
+  }
   if (serviceToken === 'youtube-music') {
     return { displayName: 'YouTube Music', iconSrc: MIXER_MEDIA_SERVICE_ICON_BY_TOKEN['youtube-music'] || '' };
   }
@@ -499,7 +638,10 @@ function ensureMixerIcons(force = false) {
     .finally(() => {
       mixerIconLastFetchAt = Date.now();
       mixerIconFetchInFlight = null;
-      if (audioData && audioData.apps) renderAppMixer(audioData.apps);
+      if (audioData && audioData.apps) {
+        if (isAnyVolumeSliderInteracting()) scheduleDeferredAppMixerRender(audioData.apps);
+        else renderAppMixer(audioData.apps);
+      }
     });
 }
 
@@ -523,7 +665,10 @@ function ensureMixerProcessIcons(processIds, force = false) {
     .finally(() => {
       mixerProcessIconLastFetchAt = Date.now();
       mixerProcessIconFetchInFlight = null;
-      if (audioData && audioData.apps) renderAppMixer(audioData.apps);
+      if (audioData && audioData.apps) {
+        if (isAnyVolumeSliderInteracting()) scheduleDeferredAppMixerRender(audioData.apps);
+        else renderAppMixer(audioData.apps);
+      }
     });
 }
 
@@ -531,6 +676,26 @@ function setAppMuteVisual(button, item, muted) {
   button.classList.toggle('muted', !!muted);
   button.innerHTML = muted ? APP_MUTE_ICON : APP_UNMUTE_ICON;
   if (item) item.dataset.muted = muted ? 'true' : 'false';
+}
+
+function findAppMixerItemById(id) {
+  if (!appMixerList) return null;
+  const key = String(id || '').trim();
+  if (!key) return null;
+  const items = appMixerList.querySelectorAll('.app-mixer-item[data-app-id]');
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (String(item.dataset.appId || '') === key) return item;
+  }
+  return null;
+}
+
+function updateAppMuteVisualById(id, muted) {
+  const item = findAppMixerItemById(id);
+  if (!item) return;
+  const button = item.querySelector('.app-mixer-mute');
+  if (!button) return;
+  setAppMuteVisual(button, item, muted);
 }
 
 async function sendAppVolume(id, level) {
@@ -554,12 +719,56 @@ async function sendAppMute(id, mute) {
       body: JSON.stringify({ id, mute: !!mute }),
     });
     if (!res.ok) throw new Error('App mute failed');
+    const payload = await res.json().catch(() => null);
     setOnline();
-    return true;
+    return { ok: true, payload };
   } catch {
     setOffline();
-    return false;
+    return { ok: false, payload: null };
   }
+}
+
+async function flushAppMuteQueue(id) {
+  const key = String(id || '').trim();
+  if (!key) return;
+  if (appMixerMuteInFlight.has(key)) return;
+  if (!appMixerMuteDesiredStates.has(key)) return;
+
+  const desired = !!appMixerMuteDesiredStates.get(key);
+  appMixerMuteInFlight.add(key);
+  const result = await sendAppMute(key, desired);
+  appMixerMuteInFlight.delete(key);
+
+  if (!result.ok) {
+    clearAppMixerMuteLock(key);
+    appMixerMuteDesiredStates.delete(key);
+    fetchAudio();
+    return;
+  }
+
+  const confirmed = result.payload && typeof result.payload.muted === 'boolean'
+    ? !!result.payload.muted
+    : desired;
+  setAppMixerMuteLock(key, confirmed, Date.now() + APP_MIXER_MUTE_LOCK_MS);
+  updateAppMuteVisualById(key, confirmed);
+
+  const latestDesired = appMixerMuteDesiredStates.get(key);
+  if (typeof latestDesired === 'undefined') return;
+  if (!!latestDesired !== desired) {
+    // User clicked again while request was in flight; send the newest intent immediately.
+    flushAppMuteQueue(key);
+    return;
+  }
+
+  appMixerMuteDesiredStates.delete(key);
+  fetchAudio();
+}
+
+function queueAppMuteUpdate(id, muted) {
+  const key = String(id || '').trim();
+  if (!key) return;
+  appMixerMuteDesiredStates.set(key, !!muted);
+  flushAppMuteQueue(key);
 }
 
 function queueAppVolumeUpdate(id, level) {
@@ -569,7 +778,7 @@ function queueAppVolumeUpdate(id, level) {
   const timer = setTimeout(() => {
     appMixerVolumeTimers.delete(key);
     flushAppVolumeQueue(key);
-  }, 35);
+  }, VOLUME_POST_DEBOUNCE_MS);
   appMixerVolumeTimers.set(key, timer);
 }
 
@@ -608,6 +817,22 @@ function renderAppMixer(rawApps) {
     .map(app => ({ app, presentation: resolveMixerPresentation(app) }))
     .sort(mixerSortComparator)
     .slice(0, APP_MIXER_SLOT_COUNT);
+  const liveAppIds = new Set(apps.map(entry => String(entry.app && entry.app.id || '').trim()).filter(Boolean));
+  appMixerSliderInteractingIds.forEach(id => {
+    if (!liveAppIds.has(id)) appMixerSliderInteractingIds.delete(id);
+  });
+  appMixerLockedVolumes.forEach((_, id) => {
+    if (!liveAppIds.has(id)) appMixerLockedVolumes.delete(id);
+  });
+  appMixerLockedMutes.forEach((_, id) => {
+    if (!liveAppIds.has(id)) appMixerLockedMutes.delete(id);
+  });
+  appMixerMuteInFlight.forEach(id => {
+    if (!liveAppIds.has(id)) appMixerMuteInFlight.delete(id);
+  });
+  appMixerMuteDesiredStates.forEach((_, id) => {
+    if (!liveAppIds.has(id)) appMixerMuteDesiredStates.delete(id);
+  });
 
   appMixerShell.dataset.empty = 'false';
   if (appMixerEmpty) appMixerEmpty.hidden = true;
@@ -615,40 +840,42 @@ function renderAppMixer(rawApps) {
   const fragment = document.createDocumentFragment();
   apps.forEach(entry => {
     const app = entry.app;
+    const appId = String(app.id || '').trim();
     const presentation = entry.presentation;
     const browserMediaContext = resolveBrowserMediaContext(app, presentation);
     const presentationDisplayName = browserMediaContext && browserMediaContext.displayName
       ? browserMediaContext.displayName
       : presentation.displayName;
+    const resolvedAppVolume = resolveAppMixerVolume(appId, app.volume, now);
+    const resolvedAppMuted = resolveAppMixerMute(appId, app.muted, now);
     const item = document.createElement('div');
     item.className = 'app-mixer-item';
-    item.dataset.muted = app.muted ? 'true' : 'false';
-    item.dataset.appId = app.id;
+    item.dataset.muted = resolvedAppMuted ? 'true' : 'false';
+    item.dataset.appId = appId;
     item.dataset.appPid = app.processId > 0 ? String(app.processId) : '';
-    item.dataset.volume = String(clampPercent(app.volume));
+    item.dataset.volume = String(clampPercent(resolvedAppVolume));
     item.title = app.title || app.name;
 
     const muteBtn = document.createElement('button');
     muteBtn.type = 'button';
     muteBtn.className = 'app-mixer-mute';
-    setAppMuteVisual(muteBtn, item, app.muted);
-    muteBtn.addEventListener('click', async eventObject => {
+    setAppMuteVisual(muteBtn, item, resolvedAppMuted);
+    muteBtn.addEventListener('click', eventObject => {
       eventObject.preventDefault();
-      const previous = item.dataset.muted === 'true';
-      const next = !previous;
+      const next = !(item.dataset.muted === 'true');
+      setAppMixerMuteLock(appId, next, Date.now() + APP_MIXER_MUTE_LOCK_MS);
       setAppMuteVisual(muteBtn, item, next);
-      const ok = await sendAppMute(app.id, next);
-      if (!ok) setAppMuteVisual(muteBtn, item, previous);
+      queueAppMuteUpdate(app.id, next);
     });
 
     const sliderWrap = document.createElement('div');
     sliderWrap.className = 'app-mixer-slider-wrap';
-    const vuKey = buildAppVuStateKey(app.id, app.processId);
+    const vuKey = buildAppVuStateKey(appId, app.processId);
     const previousVu = vuKey ? previousVuByKey.get(vuKey) : undefined;
-    const trackedRawVu = activityStale ? 0 : readTrackedAppVuRawTarget(app.id, app.processId, now);
+    const trackedRawVu = activityStale ? 0 : readTrackedAppVuRawTarget(appId, app.processId, now);
     const snapshotRawVu = activityStale ? 0 : clampPercent(Number(app.activity) || 0);
     const initialRawVu = Math.max(trackedRawVu, snapshotRawVu);
-    const seededVu = scaleVuByVolume(initialRawVu, app.volume, app.muted);
+    const seededVu = scaleVuByVolume(initialRawVu, resolvedAppVolume, resolvedAppMuted);
     const initialVu = Number.isFinite(previousVu) ? previousVu : seededVu;
     item.dataset.vuLevel = String(initialVu);
     sliderWrap.style.setProperty('--vu-level', String(initialVu));
@@ -658,25 +885,41 @@ function renderAppMixer(rawApps) {
     slider.className = 'app-mixer-slider';
     slider.min = '0';
     slider.max = '100';
-    slider.value = String(app.volume);
+    slider.value = String(resolvedAppVolume);
     slider.setAttribute('aria-label', app.name);
 
     const value = document.createElement('div');
     value.className = 'app-mixer-volume';
-    value.textContent = `${Math.round(app.volume)}%`;
+    value.textContent = `${Math.round(resolvedAppVolume)}%`;
     const applyMixerFill = amount => {
       const safeAmount = Math.max(0, Math.min(100, Number(amount) || 0));
       sliderWrap.style.setProperty('--slider-level', String(safeAmount));
     };
-    applyMixerFill(app.volume);
+    applyMixerFill(resolvedAppVolume);
+
+    const beginInteraction = () => setAppMixerSliderInteracting(appId, true);
+    const endInteraction = () => {
+      setAppMixerSliderInteracting(appId, false);
+      if (appMixerRenderPendingApps !== null) scheduleDeferredAppMixerRender(appMixerRenderPendingApps);
+    };
 
     slider.addEventListener('input', () => {
+      beginInteraction();
       const level = Math.max(0, Math.min(100, Number(slider.value) || 0));
+      lastAppMixerSliderInputAt = Date.now();
+      setAppMixerVolumeLock(appId, level, lastAppMixerSliderInputAt + APP_MIXER_VOLUME_LOCK_MS);
       value.textContent = `${Math.round(level)}%`;
       applyMixerFill(level);
       item.dataset.volume = String(level);
-      queueAppVolumeUpdate(app.id, level);
+      queueAppVolumeUpdate(appId, level);
     });
+    slider.addEventListener('pointerdown', beginInteraction);
+    slider.addEventListener('pointerup', endInteraction);
+    slider.addEventListener('pointercancel', endInteraction);
+    slider.addEventListener('change', endInteraction);
+    slider.addEventListener('blur', endInteraction);
+    slider.addEventListener('keydown', beginInteraction);
+    slider.addEventListener('keyup', endInteraction);
 
     sliderWrap.appendChild(slider);
 
@@ -784,13 +1027,30 @@ function applyAudio(data) {
     ? reconcileQuickOutputAudioSnapshot(data || null)
     : (data || null);
   audioData = normalizedData;
+  const sliderInteracting = isAnyVolumeSliderInteracting();
   if (normalizedData && normalizedData.speaker) {
     const speaker = normalizedData.speaker.name || normalizedData.speaker.label;
     if (spkName) spkName.textContent = speaker;
-    const vol = normalizedData.speaker.volume;
-    if (volSlider && document.activeElement !== volSlider) volSlider.value = vol;
-    if (volVal) volVal.textContent = vol + '%';
-    refreshSlider(vol);
+    const incomingVolume = Math.max(0, Math.min(100, Number(normalizedData.speaker.volume) || 0));
+    const now = Date.now();
+    let resolvedVolume = incomingVolume;
+    if (speakerVolumeLockedLevel !== null) {
+      const locked = Math.max(0, Math.min(100, Number(speakerVolumeLockedLevel) || 0));
+      if (incomingVolume === locked) {
+        speakerVolumeLockedLevel = null;
+        speakerVolumeLockUntil = 0;
+      } else if (now < speakerVolumeLockUntil) {
+        resolvedVolume = locked;
+      } else {
+        speakerVolumeLockedLevel = null;
+        speakerVolumeLockUntil = 0;
+      }
+    }
+    if (!sliderInteracting) {
+      if (volSlider) volSlider.value = resolvedVolume;
+      if (volVal) volVal.textContent = resolvedVolume + '%';
+      refreshSlider(resolvedVolume);
+    }
     const serverMuted = !!normalizedData.speaker.muted;
     if (speakerMuteLockedValue !== null) {
       if (serverMuted === speakerMuteLockedValue) {
@@ -813,16 +1073,41 @@ function applyAudio(data) {
     const mic = normalizedData.mic.name || normalizedData.mic.label;
     if (micName) micName.textContent = mic;
     if (micContext) micContext.textContent = mic;
-    const mv = Number(normalizedData.mic.volume);
-    if (Number.isFinite(mv) && micVolSlider && document.activeElement !== micVolSlider) {
-      micVolSlider.value = mv;
-      if (micVolVal) micVolVal.textContent = mv + '%';
+    const incomingMicVolume = Math.max(0, Math.min(100, Number(normalizedData.mic.volume) || 0));
+    const now = Date.now();
+    let resolvedMicVolume = incomingMicVolume;
+    if (micVolumeLockedLevel !== null) {
+      const lockedMic = Math.max(0, Math.min(100, Number(micVolumeLockedLevel) || 0));
+      if (incomingMicVolume === lockedMic) {
+        micVolumeLockedLevel = null;
+        micVolumeLockUntil = 0;
+      } else if (now < micVolumeLockUntil) {
+        resolvedMicVolume = lockedMic;
+      } else {
+        micVolumeLockedLevel = null;
+        micVolumeLockUntil = 0;
+      }
     }
+    if (micVolSlider && !sliderInteracting) {
+      micVolSlider.value = resolvedMicVolume;
+      if (micVolVal) micVolVal.textContent = resolvedMicVolume + '%';
+    }
+    if (micVolVal && sliderInteracting) micVolVal.textContent = `${resolvedMicVolume}%`;
     if (micVolSlider) micVolSlider.classList.toggle('muted', !!normalizedData.mic.muted);
-    if (micVolSlider) refreshMicSlider(micVolSlider.value);
+    if (micVolSlider && !sliderInteracting) refreshMicSlider(micVolSlider.value);
   }
 
-  renderAppMixer(normalizedData && normalizedData.apps);
+  const apps = normalizedData && normalizedData.apps;
+  if (sliderInteracting) {
+    scheduleDeferredAppMixerRender(apps);
+  } else {
+    if (appMixerRenderDeferredTimer) {
+      clearTimeout(appMixerRenderDeferredTimer);
+      appMixerRenderDeferredTimer = null;
+    }
+    appMixerRenderPendingApps = null;
+    renderAppMixer(apps);
+  }
   if (typeof syncQuickShortcutButton === 'function') syncQuickShortcutButton();
   if ($('settings-overlay') && !$('settings-overlay').hidden && typeof renderQuickOutputSwitchControls === 'function') {
     renderQuickOutputSwitchControls();
@@ -831,11 +1116,14 @@ function applyAudio(data) {
 
 function onMicVolumeInput(v) {
   const level = parseInt(v, 10);
+  lastMicSliderInputAt = Date.now();
+  micVolumeLockedLevel = Math.max(0, Math.min(100, Number(level) || 0));
+  micVolumeLockUntil = lastMicSliderInputAt + VOLUME_LEVEL_LOCK_MS;
   if (micVolVal) micVolVal.textContent = level + '%';
   refreshMicSlider(level);
   micVolumePendingLevel = level;
   clearTimeout(micVolumeFlushTimer);
-  micVolumeFlushTimer = setTimeout(flushMicVolumeQueue, 35);
+  micVolumeFlushTimer = setTimeout(flushMicVolumeQueue, VOLUME_POST_DEBOUNCE_MS);
 }
 
 async function flushMicVolumeQueue() {
@@ -878,3 +1166,22 @@ async function fetchAudio() {
   } catch { setOffline(); }
   fetchingAudio = false;
 }
+
+function bindVolumeInteractionSignals(slider, setInteracting) {
+  if (!slider || typeof setInteracting !== 'function') return;
+  const begin = () => setInteracting(true);
+  const end = () => {
+    setInteracting(false);
+    if (appMixerRenderPendingApps !== null) scheduleDeferredAppMixerRender(appMixerRenderPendingApps);
+  };
+  slider.addEventListener('pointerdown', begin);
+  slider.addEventListener('pointerup', end);
+  slider.addEventListener('pointercancel', end);
+  slider.addEventListener('change', end);
+  slider.addEventListener('blur', end);
+  slider.addEventListener('keydown', begin);
+  slider.addEventListener('keyup', end);
+}
+
+bindVolumeInteractionSignals(volSlider, next => { speakerSliderInteracting = !!next; });
+bindVolumeInteractionSignals(micVolSlider, next => { micSliderInteracting = !!next; });

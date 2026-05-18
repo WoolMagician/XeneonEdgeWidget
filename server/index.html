@@ -10,17 +10,17 @@
 
 <!-- Component styles -->
 <link rel="stylesheet" href="components/Topbar/Topbar.css">
-<link rel="stylesheet" href="components/MediaPanel/MediaPanel.css">
+<link rel="stylesheet" href="components/MediaPanel/MediaPanel.css?v=20260518-bar-gradient-fix2">
 <link rel="stylesheet" href="components/CalendarView/CalendarView.css">
 <link rel="stylesheet" href="components/DayModal/DayModal.css">
 <link rel="stylesheet" href="components/EventToast/EventToast.css">
-<link rel="stylesheet" href="components/MicPanel/MicPanel.css">
+<link rel="stylesheet" href="components/MicPanel/MicPanel.css?v=20260518-bar-gradient-fix2">
 <link rel="stylesheet" href="components/ShortcutPanel/ShortcutPanel.css?v=20260517-halo-corefill">
-<link rel="stylesheet" href="components/HourCounter/HourCounter.css?v=20260517-counter-biggertext">
+<link rel="stylesheet" href="components/HourCounter/HourCounter.css?v=20260518-counter-touch-timepicker">
 <link rel="stylesheet" href="components/TasksPanel/TasksPanel.css">
 <link rel="stylesheet" href="components/CustomSelect/CustomSelect.css">
 <link rel="stylesheet" href="components/SystemPanel/SystemPanel.css">
-<link rel="stylesheet" href="components/AudioSection/AudioSection.css">
+<link rel="stylesheet" href="components/AudioSection/AudioSection.css?v=20260518-bar-gradient-fix2">
 <link rel="stylesheet" href="components/DevicePicker/DevicePicker.css">
 <link rel="stylesheet" href="components/AppSwitcher/AppSwitcher.css">
 <link rel="stylesheet" href="components/MediaMode/MediaMode.css">
@@ -783,11 +783,19 @@
           <b id="counter-summary-window">0h 00m</b>
         </div>
         <div class="counter-summary-card">
-          <span data-i18n="counter_running">Timer</span>
+          <span data-i18n="counter_status_label">Stato</span>
           <b id="counter-summary-status">Fermo</b>
         </div>
       </div>
+      <div class="counter-overlay-notice" id="counter-overlay-notice" hidden></div>
       <div class="counter-days" id="counter-days-list"></div>
+    </div>
+    <div class="counter-inline-confirm" id="counter-inline-confirm" hidden>
+      <div class="counter-inline-confirm-text" id="counter-inline-confirm-text"></div>
+      <div class="counter-inline-confirm-actions">
+        <button class="counter-inline-confirm-btn" id="counter-inline-confirm-cancel" type="button" data-i18n="counter_cancel">Annulla</button>
+        <button class="counter-inline-confirm-btn danger" id="counter-inline-confirm-ok" type="button" data-i18n="counter_confirm">Conferma</button>
+      </div>
     </div>
   </section>
 </div>
@@ -886,23 +894,23 @@
 <script src="js/utils.js"></script>
 <script src="js/state.js"></script>
 <script src="js/status.js"></script>
-<script src="js/i18n.js"></script>
+<script src="js/i18n.js?v=20260518-counter-touch-timepicker"></script>
 <script src="js/audio-feedback.js"></script>
 <script src="js/clock.js"></script>
 <script src="js/news.js"></script>
 <script src="js/mic.js"></script>
-<script src="js/volume.js"></script>
-<script src="js/media.js"></script>
+<script src="js/volume.js?v=20260518-qtwebengine-filter-restore1"></script>
+<script src="js/media.js?v=20260518-bar-gradient-fix2"></script>
 <script src="js/calendar.js"></script>
 <script src="js/system.js"></script>
 <script src="js/network.js"></script>
 <script src="js/tasks.js"></script>
-<script src="js/hour-counter.js"></script>
+<script src="js/hour-counter.js?v=20260518-counter-touch-timepicker"></script>
 <script src="js/picker.js"></script>
 <script src="js/app-switcher.js"></script>
 <script src="js/settings.js"></script>
 <script src="js/media-mode.js"></script>
 <script src="js/dashboard-layout.js"></script>
-<script src="js/main.js"></script>
+<script src="js/main.js?v=20260518-sse-flicker-fix"></script>
 </body>
 </html>

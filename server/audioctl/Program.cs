@@ -15,7 +15,7 @@ internal static class Program
     private const int S_OK = 0;
     private const int DeviceStateActive = 0x00000001;
     private const int StgmRead = 0x00000000;
-    private const int MaxMediaThumbnailBytes = 5 * 1024 * 1024;
+    private const int MaxMediaThumbnailBytes = 512 * 1024;
     private static readonly PROPERTYKEY PkeyDeviceFriendlyName = new(new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"), 14);
     private static readonly PROPERTYKEY PkeyDeviceDesc = new(new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"), 2);
     private static readonly PROPERTYKEY PkeyDeviceInterfaceFriendlyName = new(new Guid("026E516E-B814-414B-83CD-856D6FEF4822"), 2);
@@ -337,8 +337,6 @@ internal static class Program
     private static int WriteMediaInfoStream(int intervalMs, int parentPid = -1)
     {
         var delayMs = Math.Clamp(intervalMs, 70, 500);
-        string lastKey = string.Empty;
-        string? lastThumbnail = null;
         using var eventSignal = new MediaStreamEventSignal();
 
         while (true)
@@ -348,50 +346,10 @@ internal static class Program
             try
             {
                 snapshot = BuildMediaInfoSnapshotAsync(includeThumbnail: false).GetAwaiter().GetResult();
-                var key = BuildMediaTrackKey(snapshot);
-
-                if (!string.IsNullOrWhiteSpace(key))
-                {
-                    if (!string.Equals(key, lastKey, StringComparison.Ordinal))
-                    {
-                        try
-                        {
-                            var detailed = BuildMediaInfoSnapshotAsync(includeThumbnail: true).GetAwaiter().GetResult();
-                            var detailedKey = BuildMediaTrackKey(detailed);
-                            if (string.Equals(detailedKey, key, StringComparison.Ordinal))
-                            {
-                                snapshot = detailed;
-                            }
-                        }
-                        catch
-                        {
-                            // Best effort only; stream should keep running.
-                        }
-                    }
-
-                    if (string.IsNullOrWhiteSpace(snapshot.Thumbnail) && string.Equals(key, lastKey, StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(lastThumbnail))
-                    {
-                        snapshot.Thumbnail = lastThumbnail;
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(snapshot.Thumbnail))
-                    {
-                        lastThumbnail = snapshot.Thumbnail;
-                    }
-
-                    lastKey = key;
-                }
-                else
-                {
-                    lastKey = string.Empty;
-                    lastThumbnail = null;
-                }
             }
             catch (Exception ex)
             {
                 snapshot = MediaInfoSnapshot.Unavailable(ex.Message);
-                lastKey = string.Empty;
-                lastThumbnail = null;
             }
 
             try
@@ -1122,8 +1080,6 @@ internal static class Program
                 var isSystem = ProgramExtensions.IsSystemSoundsSession(control2, pid, string.Empty, label, sessionId);
                 var token = BuildSessionToken(string.Empty, label, sessionId, isSystem);
                 if (string.IsNullOrWhiteSpace(token)) continue;
-                if (token.Equals("qtwebengineprocess.exe", StringComparison.OrdinalIgnoreCase)) continue;
-
                 meter = control as IAudioMeterInformation;
                 var peakValue = 0f;
                 if (meter != null) meter.GetPeakValue(out peakValue);

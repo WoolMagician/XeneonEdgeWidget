@@ -133,7 +133,7 @@ function setMediaProgressFill(slider, ratio) {
   if (!slider) return;
   const safeRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
   const pct = safeRatio * 100;
-  const fill = `linear-gradient(to right, var(--accent) 0%, var(--accent) ${pct}%, #171c1c ${pct}%, #171c1c 100%)`;
+  const fill = `linear-gradient(to right, var(--accent) 0 ${pct}%, #171c1c ${pct}% 100%)`;
   slider.style.setProperty('--media-progress-fill', fill);
   slider.style.background = fill;
 }
