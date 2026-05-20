@@ -199,8 +199,22 @@
   font-size: 22px;
 }
 
+.calendar-overlay-body #cal-pane-calendar .day-cell-event,
 .calendar-overlay-body #cal-pane-calendar .day-cell-holiday {
   font-size: 12px;
+}
+
+.calendar-overlay-body #cal-pane-calendar .day-cell-counter {
+  font-size: 13px;
+}
+
+.calendar-overlay-body #cal-pane-calendar .day-cell-counter svg {
+  width: 12px;
+  height: 12px;
+}
+
+.calendar-overlay-body #cal-pane-calendar .day-cell-month {
+  font-size: 11px;
 }
 
 .calendar-overlay-body #cal-pane-calendar .calendar-card {
@@ -457,6 +471,8 @@
   align-items: center;
   justify-content: center;
   gap: 2px;
+  overflow: hidden;
+  text-align: center;
   transition: transform 0.12s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
@@ -473,11 +489,31 @@
 .day-cell-number {
   line-height: 1;
   font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 3px;
+  max-width: calc(100% - 6px);
+  min-width: 0;
 }
 
+.day-cell-month {
+  color: #8f9b96;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.day-cell-day {
+  font-size: 1.08em;
+}
+
+.day-cell-event,
+.day-cell-counter,
 .day-cell-holiday {
   max-width: calc(100% - 6px);
-  color: #ffb9be;
   font-size: 9.75px;
   font-weight: 820;
   line-height: 1.05;
@@ -485,6 +521,40 @@
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+}
+
+.day-cell-counter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: #8ce9b7;
+  font-size: 10.75px;
+}
+
+.day-cell-counter svg {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.day-cell-counter-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.day-cell-event {
+  color: #d3bcff;
+}
+
+.day-cell-holiday {
+  color: #ffb9be;
 }
 
 .day-cell.has-events::before {
@@ -518,6 +588,42 @@
 
 .day-cell.has-remote-events {
   border-color: rgba(var(--accent-rgb),0.18);
+}
+
+.day-cell.has-counter-hours:not(.selected) {
+  border-color: rgba(140,233,183,0.24);
+}
+
+.day-cell.adjacent-month:not(.selected) {
+  color: #89958f;
+  border-color: rgba(255,255,255,0.14);
+  border-style: dashed;
+  background:
+    repeating-linear-gradient(135deg, rgba(255,255,255,0.04) 0 1px, transparent 1px 7px),
+    rgba(255,255,255,0.012);
+}
+
+.day-cell.adjacent-month:not(.selected):hover {
+  color: #ccd8d2;
+  border-color: rgba(var(--accent-rgb),0.34);
+  background:
+    repeating-linear-gradient(135deg, rgba(var(--accent-rgb),0.08) 0 1px, transparent 1px 7px),
+    rgba(var(--accent-rgb),0.055);
+}
+
+.day-cell.adjacent-month.today:not(.selected) {
+  color: rgba(var(--accent-rgb),0.72);
+  border-color: rgba(var(--accent-rgb),0.20);
+}
+
+.day-cell.adjacent-month .day-cell-event,
+.day-cell.adjacent-month .day-cell-counter,
+.day-cell.adjacent-month .day-cell-holiday {
+  opacity: 0.58;
+}
+
+.day-cell.adjacent-month .day-cell-month {
+  color: #606d68;
 }
 
 .upcoming-block {

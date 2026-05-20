@@ -25,15 +25,10 @@ internal static class Program
         WriteIndented = false,
     };
 
-    [DllImport("combase.dll")]
-    private static extern int RoInitialize(uint initType);
-
-    [DllImport("combase.dll")]
-    private static extern void RoUninitialize();
-
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int SetCurrentProcessExplicitAppUserModelID(string appID);
 
+    [MTAThread]
     private static int Main(string[] args)
     {
         try { SetCurrentProcessExplicitAppUserModelID("XeneonEdgeWidget.AudioCtl"); } catch { }
@@ -80,6 +75,8 @@ internal static class Program
                         ParseOptionalInt(args, 2, -1));
                 case "media-info":
                     return WriteMediaInfoJson();
+                case "media-probe":
+                    return WriteMediaProbeJson();
                 case "media-stream":
                     return WriteMediaInfoStream(
                         ParseOptionalInt(args, 1, 120),
@@ -268,14 +265,26 @@ internal static class Program
 
     private static int WriteSnapshotJson()
     {
-        var snapshot = BuildSnapshot();
+        AudioSnapshot snapshot;
+        try
+        {
+            snapshot = BuildSnapshot();
+        }
+        catch (Exception ex)
+        {
+            snapshot = new AudioSnapshot
+            {
+                Error = ex.Message,
+                Warnings = new List<string> { $"snapshot failed: {ex.Message}" },
+            };
+        }
         Console.Out.Write(JsonSerializer.Serialize(snapshot, JsonOptions));
         return 0;
     }
 
     private static int WriteActivityJson()
     {
-        var activity = BuildActivitySnapshot();
+        var activity = BuildActivitySnapshot(bounded: true);
         Console.Out.Write(JsonSerializer.Serialize(activity, JsonOptions));
         return 0;
     }
@@ -345,7 +354,10 @@ internal static class Program
             MediaInfoSnapshot snapshot;
             try
             {
-                snapshot = BuildMediaInfoSnapshotAsync(includeThumbnail: false).GetAwaiter().GetResult();
+                var manager = eventSignal.Manager;
+                snapshot = manager == null
+                    ? MediaInfoSnapshot.Unavailable(eventSignal.Error ?? "SMTC manager unavailable")
+                    : BuildMediaInfoSnapshotAsync(includeThumbnail: false, manager).GetAwaiter().GetResult();
             }
             catch (Exception ex)
             {
@@ -376,24 +388,39 @@ internal static class Program
         private readonly System.Threading.AutoResetEvent _signal = new(false);
         private GlobalSystemMediaTransportControlsSessionManager? _manager;
         private GlobalSystemMediaTransportControlsSession? _session;
+        private string? _error;
+
+        public GlobalSystemMediaTransportControlsSessionManager? Manager
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _manager;
+                }
+            }
+        }
+
+        public string? Error
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _error;
+                }
+            }
+        }
 
         public MediaStreamEventSignal()
         {
             try
             {
-                var roInit = TryInitializeWinRt();
-                try
-                {
-                    _manager = AwaitAsync(
-                        GlobalSystemMediaTransportControlsSessionManager.RequestAsync(),
-                        5500,
-                        "stream.manager.request"
-                    ).GetAwaiter().GetResult();
-                }
-                finally
-                {
-                    CleanupWinRtInit(roInit);
-                }
+                _manager = AwaitAsync(
+                    GlobalSystemMediaTransportControlsSessionManager.RequestAsync(),
+                    5500,
+                    "stream.manager.request"
+                ).GetAwaiter().GetResult();
 
                 if (_manager != null)
                 {
@@ -401,9 +428,13 @@ internal static class Program
                     AttachSession(_manager.GetCurrentSession());
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Event path is best-effort; polling fallback still works.
+                lock (_gate)
+                {
+                    _error = ex.Message;
+                }
+                // Keep the stream alive with unavailable samples; the Node side will back off/restart.
             }
 
             // Force an immediate first sample.
@@ -516,12 +547,40 @@ internal static class Program
         return 0;
     }
 
-    private static async Task<MediaInfoSnapshot> BuildMediaInfoSnapshotAsync(bool includeThumbnail = true)
+    private static int WriteMediaProbeJson()
     {
-        var roInit = TryInitializeWinRt();
+        var startedAt = Stopwatch.GetTimestamp();
         try
         {
-        var manager = await AwaitAsync(
+            var manager = GlobalSystemMediaTransportControlsSessionManager.RequestAsync().GetAwaiter().GetResult();
+            var current = manager.GetCurrentSession();
+            var sessions = manager.GetSessions();
+            Console.Out.Write(JsonSerializer.Serialize(new MediaProbeResult
+            {
+                Ok = true,
+                ElapsedMs = ElapsedMilliseconds(startedAt),
+                SessionCount = sessions?.Count ?? 0,
+                CurrentSource = current?.SourceAppUserModelId ?? string.Empty,
+            }, JsonOptions));
+        }
+        catch (Exception ex)
+        {
+            Console.Out.Write(JsonSerializer.Serialize(new MediaProbeResult
+            {
+                Ok = false,
+                ElapsedMs = ElapsedMilliseconds(startedAt),
+                Error = ex.Message,
+                HResult = $"0x{ex.HResult:X8}",
+            }, JsonOptions));
+        }
+        return 0;
+    }
+
+    private static async Task<MediaInfoSnapshot> BuildMediaInfoSnapshotAsync(
+        bool includeThumbnail = true,
+        GlobalSystemMediaTransportControlsSessionManager? manager = null)
+    {
+        manager ??= await AwaitAsync(
             GlobalSystemMediaTransportControlsSessionManager.RequestAsync(),
             5500,
             "manager.request");
@@ -585,11 +644,6 @@ internal static class Program
             Duration = selected.Duration,
             Score = selected.Score,
         };
-        }
-        finally
-        {
-            CleanupWinRtInit(roInit);
-        }
     }
 
     private static string BuildMediaTrackKey(MediaInfoSnapshot snapshot)
@@ -604,9 +658,6 @@ internal static class Program
 
     private static async Task<MediaActionResult> ExecuteMediaActionAsync(string action, long targetSeconds)
     {
-        var roInit = TryInitializeWinRt();
-        try
-        {
         var manager = await AwaitAsync(
             GlobalSystemMediaTransportControlsSessionManager.RequestAsync(),
             5500,
@@ -672,11 +723,6 @@ internal static class Program
             Position = 0,
             Duration = 0,
         };
-        }
-        finally
-        {
-            CleanupWinRtInit(roInit);
-        }
     }
 
     private static async Task<GlobalSystemMediaTransportControlsSession?> ResolvePrimaryMediaSessionAsync(
@@ -885,6 +931,11 @@ internal static class Program
         }
     }
 
+    private static int ElapsedMilliseconds(long startedAt)
+    {
+        return Math.Max(0, (int)Math.Round(Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds));
+    }
+
     private static async Task<T> AwaitAsync<T>(IAsyncOperation<T> operation, int timeoutMs, string stage)
     {
         var safeTimeout = Math.Max(250, timeoutMs);
@@ -922,10 +973,20 @@ internal static class Program
         var completed = await Task.WhenAny(tcs.Task, Task.Delay(safeTimeout)).ConfigureAwait(false);
         if (completed != tcs.Task)
         {
+            try { operation.Completed = null; } catch { }
+            try { operation.Cancel(); } catch { }
+            try { operation.Close(); } catch { }
             throw new TimeoutException($"Async timeout at {stage} ({safeTimeout}ms)");
         }
 
-        return await tcs.Task.ConfigureAwait(false);
+        try
+        {
+            return await tcs.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            try { operation.Completed = null; } catch { }
+        }
     }
 
     private static string GetMediaAppName(string source, string title, string artist, string album)
@@ -953,41 +1014,91 @@ internal static class Program
         return sourceTrimmed;
     }
 
-    private static int TryInitializeWinRt()
+    private static T RunWithTimeout<T>(
+        Func<T> action,
+        T fallback,
+        int timeoutMs,
+        string stage,
+        List<string> warnings)
     {
+        var safeTimeout = Math.Max(50, timeoutMs);
         try
         {
-            return RoInitialize(1);
+            var task = Task.Run(action);
+            if (!task.Wait(safeTimeout))
+            {
+                warnings.Add($"{stage} timed out after {safeTimeout}ms");
+                return fallback;
+            }
+
+            return task.GetAwaiter().GetResult();
         }
-        catch
+        catch (Exception ex)
         {
-            return int.MinValue;
+            var baseException = ex is AggregateException aggregate
+                ? aggregate.GetBaseException()
+                : ex;
+            warnings.Add($"{stage} failed: {baseException.Message}");
+            return fallback;
         }
     }
 
-    private static void CleanupWinRtInit(int roResult)
+    private static AudioActivitySnapshot BuildActivitySnapshot(bool bounded = false)
     {
-        if (roResult >= 0)
+        if (!bounded)
         {
-            try { RoUninitialize(); } catch { }
+            return new AudioActivitySnapshot
+            {
+                Speaker = ReadDefaultRenderActivity(),
+                Apps = EnumerateRenderSessionActivity(),
+            };
         }
-    }
 
-    private static AudioActivitySnapshot BuildActivitySnapshot()
-    {
+        var warnings = new List<string>();
+        var speaker = RunWithTimeout(ReadDefaultRenderActivity, 0, 250, "activity.speaker", warnings);
+        var apps = RunWithTimeout(
+            EnumerateRenderSessionActivity,
+            new List<AudioSessionActivitySnapshot>(),
+            350,
+            "activity.sessions",
+            warnings);
+
         return new AudioActivitySnapshot
         {
-            Speaker = ReadDefaultRenderActivity(),
-            Apps = EnumerateRenderSessionActivity(),
+            Speaker = speaker,
+            Apps = apps,
+            Error = warnings.Count > 0 ? string.Join("; ", warnings) : null,
+            Warnings = warnings,
         };
     }
 
     private static AudioSnapshot BuildSnapshot()
     {
-        var speakers = EnumerateEndpoints(EDataFlow.Render);
-        var mics = EnumerateEndpoints(EDataFlow.Capture);
-        var defaultSpeakerEndpointId = TryGetDefaultEndpointId(EDataFlow.Render, ERole.Multimedia);
-        var defaultMicEndpointId = TryGetDefaultEndpointId(EDataFlow.Capture, ERole.Multimedia);
+        var warnings = new List<string>();
+        var speakers = RunWithTimeout(
+            () => EnumerateEndpoints(EDataFlow.Render),
+            new List<AudioEndpointSnapshot>(),
+            900,
+            "snapshot.renderEndpoints",
+            warnings);
+        var mics = RunWithTimeout(
+            () => EnumerateEndpoints(EDataFlow.Capture),
+            new List<AudioEndpointSnapshot>(),
+            900,
+            "snapshot.captureEndpoints",
+            warnings);
+        var defaultSpeakerEndpointId = RunWithTimeout(
+            () => TryGetDefaultEndpointId(EDataFlow.Render, ERole.Multimedia),
+            string.Empty,
+            350,
+            "snapshot.defaultRender",
+            warnings);
+        var defaultMicEndpointId = RunWithTimeout(
+            () => TryGetDefaultEndpointId(EDataFlow.Capture, ERole.Multimedia),
+            string.Empty,
+            350,
+            "snapshot.defaultCapture",
+            warnings);
 
         foreach (var speaker in speakers)
         {
@@ -999,7 +1110,12 @@ internal static class Program
             mic.IsDefault = string.Equals(mic.EndpointId, defaultMicEndpointId, StringComparison.OrdinalIgnoreCase);
         }
 
-        var apps = EnumerateRenderSessions();
+        var apps = RunWithTimeout(
+            EnumerateRenderSessions,
+            new List<AudioSessionSnapshot>(),
+            1100,
+            "snapshot.sessions",
+            warnings);
         return new AudioSnapshot
         {
             Speaker = speakers.FirstOrDefault(item => item.IsDefault) ?? speakers.FirstOrDefault(),
@@ -1007,6 +1123,8 @@ internal static class Program
             Speakers = speakers,
             Mics = mics,
             Apps = apps,
+            Error = warnings.Count > 0 ? string.Join("; ", warnings) : null,
+            Warnings = warnings,
         };
     }
 
@@ -1773,6 +1891,8 @@ internal sealed class AudioSnapshot
     public List<AudioEndpointSnapshot> Speakers { get; set; } = new();
     public List<AudioEndpointSnapshot> Mics { get; set; } = new();
     public List<AudioSessionSnapshot> Apps { get; set; } = new();
+    public string? Error { get; set; }
+    public List<string> Warnings { get; set; } = new();
 }
 
 internal sealed class AudioEndpointSnapshot
@@ -1804,6 +1924,8 @@ internal sealed class AudioActivitySnapshot
 {
     public int Speaker { get; set; }
     public List<AudioSessionActivitySnapshot> Apps { get; set; } = new();
+    public string? Error { get; set; }
+    public List<string> Warnings { get; set; } = new();
 }
 
 internal sealed class AudioSessionActivitySnapshot
@@ -1885,6 +2007,16 @@ internal sealed class MediaActionResult
     public double Position { get; set; }
     public int Duration { get; set; }
     public string? Error { get; set; }
+}
+
+internal sealed class MediaProbeResult
+{
+    public bool Ok { get; set; }
+    public int ElapsedMs { get; set; }
+    public int SessionCount { get; set; }
+    public string CurrentSource { get; set; } = string.Empty;
+    public string? Error { get; set; }
+    public string? HResult { get; set; }
 }
 
 internal sealed class MediaSessionCandidate

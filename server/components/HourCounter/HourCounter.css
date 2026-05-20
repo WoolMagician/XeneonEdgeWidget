@@ -88,15 +88,15 @@
 
 .shortcut-counter-copy {
   display: grid;
-  gap: 5px;
+  gap: 3px;
   align-content: center;
   min-height: 100%;
-  padding: 3px 0 3px 0;
+  padding: 2px 0 2px 0;
 }
 
 .shortcut-counter-kicker {
   color: #c6d6e6;
-  font-size: 12px;
+  font-size: 11.4px;
   font-weight: 900;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -113,7 +113,7 @@
 
 .shortcut-counter-metric-label {
   color: #8ea2b4;
-  font-size: 11.8px;
+  font-size: 10.4px;
   font-weight: 780;
   text-transform: uppercase;
   letter-spacing: 0.35px;
@@ -124,31 +124,41 @@
 
 .shortcut-counter-total {
   color: #f0f6ff;
-  font-size: 25px;
+  font-size: 21px;
   line-height: 1;
   font-weight: 940;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
+.shortcut-counter-week-total,
+.shortcut-counter-month-total,
 .shortcut-counter-session-time {
   color: #deecff;
-  font-size: 21px;
+  font-size: 16.5px;
   line-height: 1;
   font-weight: 885;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
+.shortcut-counter-week-total {
+  color: #bcd9ff;
+}
+
+.shortcut-counter-month-total {
+  color: #c9e7df;
+}
+
 .shortcut-counter-status {
   justify-self: start;
   margin-top: 2px;
-  padding: 3px 9px;
+  padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid rgba(157,176,189,0.34);
   background: rgba(12,18,23,0.58);
   color: #b5c7d2;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 840;
   text-transform: uppercase;
   letter-spacing: 0.4px;

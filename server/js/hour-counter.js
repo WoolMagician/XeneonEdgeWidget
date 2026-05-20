@@ -397,6 +397,17 @@ function formatCounterDayLabel(dateKey) {
   return dayPart.charAt(0).toUpperCase() + dayPart.slice(1);
 }
 
+function getCounterWeekStartMs(date = new Date()) {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  return start.getTime();
+}
+
+function getCounterMonthStartMs(date = new Date()) {
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
+}
+
 function isCounterOverlayOpen() {
   const overlay = $('counter-overlay');
   return !!(overlay && !overlay.hidden);
@@ -497,20 +508,42 @@ function requestHourCounterConfirm(message, confirmLabel = '') {
 }
 
 function getCounterBaseTotals() {
-  const todayKey = toDateInputValue(new Date());
+  const today = new Date();
+  const todayKey = toDateInputValue(today);
+  const weekStartMs = getCounterWeekStartMs(today);
+  const monthStartMs = getCounterMonthStartMs(today);
   const days = Array.isArray(counterSnapshot && counterSnapshot.days) ? counterSnapshot.days : [];
+  const rawSnapshotMonthMs = Number(counterSnapshot && counterSnapshot.totals && counterSnapshot.totals.monthMs);
+  const hasSnapshotMonthMs = Number.isFinite(rawSnapshotMonthMs);
+  const snapshotMonthMs = hasSnapshotMonthMs ? Math.max(0, rawSnapshotMonthMs) : 0;
   let windowMs = 0;
+  let weekClosedMs = 0;
+  let monthClosedMs = 0;
   let todayClosedMs = 0;
   days.forEach(day => {
+    const dayKey = String(day && day.date || '');
+    const dayStartMs = Date.parse(`${dayKey}T00:00:00`);
+    const isThisWeek = Number.isFinite(dayStartMs) && dayStartMs >= weekStartMs;
+    const isThisMonth = Number.isFinite(dayStartMs) && dayStartMs >= monthStartMs;
     const sessions = Array.isArray(day && day.sessions) ? day.sessions : [];
     sessions.forEach(session => {
       if (session && session.active) return;
       const duration = Math.max(0, Number(session && session.durationMs) || 0);
       windowMs += duration;
-      if (String(day && day.date || '') === todayKey) todayClosedMs += duration;
+      if (isThisWeek) weekClosedMs += duration;
+      if (isThisMonth) monthClosedMs += duration;
+      if (dayKey === todayKey) todayClosedMs += duration;
     });
   });
-  return { windowMs, todayClosedMs, todayKey };
+  return {
+    windowMs,
+    weekClosedMs,
+    monthClosedMs: hasSnapshotMonthMs ? snapshotMonthMs : monthClosedMs,
+    todayClosedMs,
+    todayKey,
+    weekStartMs,
+    monthStartMs,
+  };
 }
 
 function getCounterActiveLiveMs(nowMs = Date.now()) {
@@ -528,10 +561,50 @@ function getCounterLiveTotals(nowMs = Date.now()) {
   const todayActiveMs = Number.isFinite(activeStartMs)
     ? Math.max(0, nowMs - Math.max(activeStartMs, todayStartMs))
     : 0;
+  const weekActiveMs = Number.isFinite(activeStartMs)
+    ? Math.max(0, nowMs - Math.max(activeStartMs, base.weekStartMs))
+    : 0;
+  const snapshotNowMs = Date.parse(String(counterSnapshot && counterSnapshot.nowAt || '').trim());
+  const monthActiveDeltaMs = Number.isFinite(activeStartMs) && Number.isFinite(snapshotNowMs)
+    ? Math.max(0, nowMs - Math.max(snapshotNowMs, activeStartMs, base.monthStartMs))
+    : 0;
   return {
     todayMs: base.todayClosedMs + todayActiveMs,
+    weekMs: base.weekClosedMs + weekActiveMs,
+    monthMs: base.monthClosedMs + monthActiveDeltaMs,
     windowMs: base.windowMs + activeLiveMs,
   };
+}
+
+function getHourCounterDayTotalMs(dateKey, nowMs = Date.now()) {
+  const safeDateKey = String(dateKey || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(safeDateKey)) return 0;
+  const days = Array.isArray(counterSnapshot && counterSnapshot.days) ? counterSnapshot.days : [];
+  const day = days.find(item => String(item && item.date || '') === safeDateKey);
+  const sessions = Array.isArray(day && day.sessions) ? day.sessions : [];
+  let totalMs = 0;
+
+  sessions.forEach(session => {
+    if (session && session.active) return;
+    totalMs += Math.max(0, Number(session && session.durationMs) || 0);
+  });
+
+  if (counterSnapshot && counterSnapshot.isRunning && counterSnapshot.active) {
+    const activeStartMs = Date.parse(String(counterSnapshot.active.startAt || '').trim());
+    const dayStartMs = Date.parse(`${safeDateKey}T00:00:00`);
+    if (Number.isFinite(activeStartMs) && Number.isFinite(dayStartMs)) {
+      const dayEndMs = dayStartMs + 24 * 60 * 60 * 1000;
+      const overlapStartMs = Math.max(activeStartMs, dayStartMs);
+      const overlapEndMs = Math.min(Number(nowMs) || Date.now(), dayEndMs);
+      if (overlapEndMs > overlapStartMs) totalMs += overlapEndMs - overlapStartMs;
+    }
+  }
+
+  return totalMs;
+}
+
+function syncCalendarHourCounterTotals() {
+  if (typeof syncCalendarCounterDayLabels === 'function') syncCalendarCounterDayLabels();
 }
 
 function setCounterButtonsDisabled(disabled) {
@@ -547,6 +620,8 @@ function renderHourCounter() {
   const playIcon = $('counter-play-icon');
   const stopIcon = $('counter-stop-icon');
   const totalEl = $('counter-today-total');
+  const weekEl = $('counter-week-total');
+  const monthEl = $('counter-month-total');
   const sessionEl = $('counter-session-time');
   const statusEl = $('counter-status');
   if (!tile || !toggleBtn || !playIcon || !stopIcon || !totalEl || !statusEl) return;
@@ -556,6 +631,8 @@ function renderHourCounter() {
   const totals = getCounterLiveTotals(nowMs);
   const sessionMs = getCounterActiveLiveMs(nowMs);
   totalEl.textContent = formatCounterDurationHm(totals.todayMs);
+  if (weekEl) weekEl.textContent = formatCounterDurationHm(totals.weekMs);
+  if (monthEl) monthEl.textContent = formatCounterDurationHm(totals.monthMs);
   if (sessionEl) sessionEl.textContent = formatCounterDurationHms(sessionMs);
 
   tile.classList.toggle('running', running);
@@ -588,6 +665,7 @@ function renderHourCounter() {
     const liveMs = Math.max(0, Date.now() - startMs);
     node.textContent = formatCounterDurationHms(liveMs);
   });
+  syncCalendarHourCounterTotals();
 }
 
 function clampCounterOverlaySelectedDay(days) {

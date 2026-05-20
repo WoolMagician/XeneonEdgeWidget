@@ -11,7 +11,8 @@ let cachedMicId       = null; // last known default mic id (SVV or endpoint id)
 
 const SVV = path.join(__dirname, 'soundvolumeview-x64', 'SoundVolumeView.exe');
 const AUDIOCTL_PROJECT = path.join(__dirname, 'audioctl', 'AudioCtl.csproj');
-const AUDIOCTL_DLL = path.join(__dirname, 'audioctl', 'bin', 'Release', 'net9.0-windows', 'AudioCtl.dll');
+const AUDIOCTL_TFM = 'net9.0-windows10.0.19041.0';
+const AUDIOCTL_DLL = path.join(__dirname, 'audioctl', 'bin', 'Release', AUDIOCTL_TFM, 'AudioCtl.dll');
 const DOTNET_BIN = process.env.XEH_DOTNET || 'dotnet';
 const CPU_TEMP_SCRIPT = path.join(__dirname, 'cpu-temp.ps1');
 const GPU_SCRIPT = path.join(__dirname, 'gpu.ps1');
@@ -267,6 +268,9 @@ let gpuCache = { gpu: null, gpuName: null, gpuTemp: null, updatedAt: 0 };
 let cpuTempCache = { cpuTemp: null, updatedAt: 0 };
 let mediaCache = { data: null, updatedAt: 0 };
 let mediaPrimaryRetryNotBefore = 0;
+let mediaPrimaryConsecutiveFailures = 0;
+let mediaActionRetryNotBefore = 0;
+let mediaActionConsecutiveFailures = 0;
 let mediaTimelineState = {
   key: '',
   lastKeyChangedAt: 0,
@@ -313,11 +317,18 @@ let mediaStreamRestartNotBefore = 0;
 let mediaStreamRecycleTimer = null;
 let mediaStreamConsecutiveParseErrors = 0;
 let mediaStreamBufferTrimCount = 0;
+let mediaStreamConsecutiveUnavailable = 0;
 let mediaStreamWaiterSeq = 0;
+let mediaStreamStartedAt = 0;
+let mediaStreamLastOutputAt = 0;
+let mediaStreamLastSampleAt = 0;
 const mediaStreamWaiters = new Map();
 let lastMediaRequestAt = 0;
 let lastMediaSsePushedAt = 0;
 const MEDIA_PRIMARY_RETRY_BACKOFF_MS = 8000;
+const MEDIA_PRIMARY_RETRY_BACKOFF_MAX_MS = 60000;
+const MEDIA_ACTION_RETRY_BACKOFF_MS = 3000;
+const MEDIA_ACTION_RETRY_BACKOFF_MAX_MS = 30000;
 const WEATHER_CACHE_MS = 10 * 60 * 1000;
 const NEWS_CACHE_MS = 5 * 60 * 1000;
 const WINDOW_APPS_CACHE_MS = 15 * 1000;
@@ -335,6 +346,9 @@ let lastAudioInfoSnapshot = null;
 let lastAudioInfoUpdatedAt = 0;
 let lastAudioCtlRawSnapshot = null;
 let lastAudioCtlRawUpdatedAt = 0;
+let audioSnapshotInFlight = null;
+let audioSnapshotRetryNotBefore = 0;
+let audioSnapshotConsecutiveFailures = 0;
 let speakerVolumeQueuedLevel = null;
 let speakerVolumeQueueInFlight = false;
 let micVolumeQueuedLevel = null;
@@ -343,20 +357,33 @@ const appVolumeQueuedLevels = new Map();
 const appVolumeQueueInFlight = new Set();
 let audioActivityCache = { speaker: 0, apps: [], updatedAt: 0 };
 let audioActivitySampleInFlight = false;
+let audioActivityRetryNotBefore = 0;
+let audioActivityConsecutiveFailures = 0;
 let audioActivityStreamProcess = null;
 let audioActivityStreamStarting = false;
 let audioActivityStreamBuffer = '';
 let audioActivityStreamRestartNotBefore = 0;
 let audioActivityStreamWaiterSeq = 0;
 let lastAudioActivitySsePushedAt = 0;
+let audioActivityStreamStartedAt = 0;
+let audioActivityStreamLastOutputAt = 0;
+let audioActivityStreamLastSampleAt = 0;
 const audioActivityStreamWaiters = new Map();
 let lastAudioActivityRequestAt = 0;
+const AUDIO_SNAPSHOT_CACHE_FRESH_MS = 750;
+const AUDIO_SNAPSHOT_STALE_GRACE_MS = 30000;
+const AUDIO_SNAPSHOT_RETRY_BACKOFF_MS = 1200;
+const AUDIO_SNAPSHOT_RETRY_BACKOFF_MAX_MS = 12000;
 const AUDIO_ACTIVITY_KEEPALIVE_MS = 8000;
 const AUDIO_ACTIVITY_CACHE_FRESH_MS = 320;
 const AUDIO_ACTIVITY_CACHE_STALE_MS = 1800;
 const AUDIO_ACTIVITY_STREAM_INTERVAL_MS = 18;
 const AUDIO_ACTIVITY_STREAM_WAIT_MS = 160;
 const AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS = 550;
+const AUDIO_ACTIVITY_SAMPLE_RETRY_BACKOFF_MS = 1000;
+const AUDIO_ACTIVITY_SAMPLE_RETRY_BACKOFF_MAX_MS = 8000;
+const AUDIO_ACTIVITY_STREAM_STARTUP_GRACE_MS = 2500;
+const AUDIO_ACTIVITY_STREAM_STALL_RECYCLE_MS = 2500;
 const AUDIO_ACTIVITY_STREAM_MAX_BUFFER_CHARS = 64 * 1024;
 const AUDIO_ACTIVITY_SSE_PUSH_MIN_INTERVAL_MS = 14;
 const AUDIO_ACTIVITY_SILENCE_FLOOR = 2;
@@ -366,6 +393,10 @@ const MEDIA_STREAM_CACHE_STALE_MS = 2200;
 const MEDIA_STREAM_INTERVAL_MS = 90;
 const MEDIA_STREAM_WAIT_MS = 180;
 const MEDIA_STREAM_RESTART_BACKOFF_MS = 600;
+const MEDIA_STREAM_STARTUP_GRACE_MS = 20000;
+const MEDIA_STREAM_STALL_RECYCLE_MS = 20000;
+const MEDIA_STREAM_UNAVAILABLE_RECYCLE_THRESHOLD = 3;
+const MEDIA_STREAM_UNAVAILABLE_RESTART_BACKOFF_MS = 3500;
 const MEDIA_STREAM_MAX_BUFFER_CHARS = 512 * 1024;
 const MEDIA_STREAM_PARSE_RECYCLE_THRESHOLD = 12;
 const MEDIA_STREAM_BUFFER_TRIM_RECYCLE_THRESHOLD = 3;
@@ -2896,6 +2927,153 @@ function resolveMediaStreamWaiters(hasSample) {
   });
 }
 
+function isUnavailableMediaSnapshot(data) {
+  return String(data && data.playbackStatus || '').trim().toLowerCase() === 'unavailable';
+}
+
+function noteAudioSnapshotFailure() {
+  audioSnapshotConsecutiveFailures += 1;
+  const exponent = Math.min(3, Math.max(0, audioSnapshotConsecutiveFailures - 1));
+  const backoffMs = Math.min(
+    AUDIO_SNAPSHOT_RETRY_BACKOFF_MAX_MS,
+    AUDIO_SNAPSHOT_RETRY_BACKOFF_MS * Math.pow(2, exponent),
+  );
+  audioSnapshotRetryNotBefore = Math.max(audioSnapshotRetryNotBefore, Date.now() + backoffMs);
+  return Math.max(0, audioSnapshotRetryNotBefore - Date.now());
+}
+
+function resetAudioSnapshotFailures() {
+  audioSnapshotConsecutiveFailures = 0;
+  audioSnapshotRetryNotBefore = 0;
+}
+
+function shouldLogAudioSnapshotFailure() {
+  return audioSnapshotConsecutiveFailures <= 3 || audioSnapshotConsecutiveFailures % 5 === 0;
+}
+
+function noteAudioActivityFailure() {
+  audioActivityConsecutiveFailures += 1;
+  const exponent = Math.min(3, Math.max(0, audioActivityConsecutiveFailures - 1));
+  const backoffMs = Math.min(
+    AUDIO_ACTIVITY_SAMPLE_RETRY_BACKOFF_MAX_MS,
+    AUDIO_ACTIVITY_SAMPLE_RETRY_BACKOFF_MS * Math.pow(2, exponent),
+  );
+  audioActivityRetryNotBefore = Math.max(audioActivityRetryNotBefore, Date.now() + backoffMs);
+  return Math.max(0, audioActivityRetryNotBefore - Date.now());
+}
+
+function resetAudioActivityFailures() {
+  audioActivityConsecutiveFailures = 0;
+  audioActivityRetryNotBefore = 0;
+}
+
+function noteMediaPrimarySampleFailure() {
+  mediaPrimaryConsecutiveFailures += 1;
+  const exponent = Math.min(3, Math.max(0, mediaPrimaryConsecutiveFailures - 1));
+  const backoffMs = Math.min(
+    MEDIA_PRIMARY_RETRY_BACKOFF_MAX_MS,
+    MEDIA_PRIMARY_RETRY_BACKOFF_MS * Math.pow(2, exponent),
+  );
+  mediaPrimaryRetryNotBefore = Math.max(mediaPrimaryRetryNotBefore, Date.now() + backoffMs);
+  return Math.max(0, mediaPrimaryRetryNotBefore - Date.now());
+}
+
+function resetMediaPrimarySampleFailures() {
+  mediaPrimaryConsecutiveFailures = 0;
+  mediaPrimaryRetryNotBefore = 0;
+}
+
+function shouldLogMediaPrimaryFailure() {
+  return mediaPrimaryConsecutiveFailures <= 3 || mediaPrimaryConsecutiveFailures % 5 === 0;
+}
+
+function noteMediaActionFailure() {
+  mediaActionConsecutiveFailures += 1;
+  const exponent = Math.min(3, Math.max(0, mediaActionConsecutiveFailures - 1));
+  const backoffMs = Math.min(
+    MEDIA_ACTION_RETRY_BACKOFF_MAX_MS,
+    MEDIA_ACTION_RETRY_BACKOFF_MS * Math.pow(2, exponent),
+  );
+  mediaActionRetryNotBefore = Math.max(mediaActionRetryNotBefore, Date.now() + backoffMs);
+  return Math.max(0, mediaActionRetryNotBefore - Date.now());
+}
+
+function resetMediaActionFailures() {
+  mediaActionConsecutiveFailures = 0;
+  mediaActionRetryNotBefore = 0;
+}
+
+function checkMediaStreamHealth(reason = 'periodic') {
+  const proc = mediaStreamProcess;
+  if (!proc || mediaStreamRecycleTimer) return false;
+
+  const now = Date.now();
+  const startedAt = Number(mediaStreamStartedAt || 0);
+  if (!startedAt) return false;
+
+  const sampleAt = Number(mediaStreamLastSampleAt || 0);
+  const outputAt = Number(mediaStreamLastOutputAt || 0);
+  const referenceAt = sampleAt || outputAt || startedAt;
+  const maxAgeMs = sampleAt ? MEDIA_STREAM_STALL_RECYCLE_MS : MEDIA_STREAM_STARTUP_GRACE_MS;
+  const ageMs = now - referenceAt;
+  if (ageMs < maxAgeMs) return false;
+
+  diagLog('WARN', 'media-stream', 'recycling stale media stream process', {
+    reason,
+    pid: proc.pid || null,
+    ageMs,
+    startedAgeMs: now - startedAt,
+    lastOutputAgeMs: outputAt ? now - outputAt : null,
+    lastSampleAgeMs: sampleAt ? now - sampleAt : null,
+  });
+  scheduleMediaStreamRecycle(`stale-${reason}`);
+  return true;
+}
+
+function checkAudioActivityStreamHealth(reason = 'periodic') {
+  const proc = audioActivityStreamProcess;
+  if (!proc) return false;
+
+  const now = Date.now();
+  const startedAt = Number(audioActivityStreamStartedAt || 0);
+  if (!startedAt) return false;
+
+  const sampleAt = Number(audioActivityStreamLastSampleAt || 0);
+  const outputAt = Number(audioActivityStreamLastOutputAt || 0);
+  const referenceAt = sampleAt || outputAt || startedAt;
+  const maxAgeMs = sampleAt ? AUDIO_ACTIVITY_STREAM_STALL_RECYCLE_MS : AUDIO_ACTIVITY_STREAM_STARTUP_GRACE_MS;
+  const ageMs = now - referenceAt;
+  if (ageMs < maxAgeMs) return false;
+
+  diagLog('WARN', 'audio-activity-stream', 'recycling stale audio activity stream process', {
+    reason,
+    pid: proc.pid || null,
+    ageMs,
+    startedAgeMs: now - startedAt,
+    lastOutputAgeMs: outputAt ? now - outputAt : null,
+    lastSampleAgeMs: sampleAt ? now - sampleAt : null,
+  });
+  stopAudioActivityStream();
+  audioActivityStreamRestartNotBefore = Math.max(
+    audioActivityStreamRestartNotBefore,
+    Date.now() + AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS,
+  );
+  return true;
+}
+
+function suspendMediaStreamAfterUnavailable(reason, backoffMs = MEDIA_STREAM_UNAVAILABLE_RESTART_BACKOFF_MS) {
+  const safeBackoffMs = Math.max(MEDIA_STREAM_RESTART_BACKOFF_MS, Number(backoffMs) || 0);
+  const restartAt = Date.now() + safeBackoffMs;
+  diagLog('WARN', 'media-stream', 'suspending media stream after unavailable samples', {
+    reason,
+    backoffMs: safeBackoffMs,
+    pid: mediaStreamProcess && mediaStreamProcess.pid ? mediaStreamProcess.pid : null,
+  });
+  mediaStreamRestartNotBefore = Math.max(mediaStreamRestartNotBefore, restartAt);
+  stopMediaStream();
+  mediaStreamRestartNotBefore = Math.max(mediaStreamRestartNotBefore, restartAt);
+}
+
 function mergeMediaArtworkFromCache(nextData) {
   if (!nextData || nextData.thumbnail) return nextData;
   const cached = mediaCache.data;
@@ -3109,6 +3287,7 @@ function queueMediaSessionThumbnailHydration(data) {
     return;
   }
 
+  if (now < mediaPrimaryRetryNotBefore) return;
   if (mediaSessionThumbnailLookupInFlight.has(trackKey)) return;
   mediaSessionThumbnailLookupInFlight.add(trackKey);
 
@@ -3122,6 +3301,8 @@ function queueMediaSessionThumbnailHydration(data) {
           resolvedThumbnail = sanitizeMediaThumbnailValue(fromAudioCtl.data.thumbnail, 'media-info-hydration');
           if (resolvedThumbnail) applyMediaSessionThumbnailToCurrentTrack(trackKey, resolvedThumbnail);
         }
+      } else if (!fromAudioCtl || !fromAudioCtl.ok || isUnavailableMediaSnapshot(fromAudioCtl.data)) {
+        noteMediaPrimarySampleFailure();
       }
       if (!resolvedThumbnail) {
         diagLog('DEBUG', 'media-thumbnail', 'media-session thumbnail hydration returned no usable thumbnail', {
@@ -3132,6 +3313,7 @@ function queueMediaSessionThumbnailHydration(data) {
       }
     } catch {
       resolvedThumbnail = null;
+      noteMediaPrimarySampleFailure();
       diagLog('DEBUG', 'media-thumbnail', 'media-session thumbnail hydration failed', { trackKey });
     } finally {
       rememberMediaSessionThumbnailLookup(trackKey, resolvedThumbnail);
@@ -3343,6 +3525,7 @@ function updateMediaCacheFromStream(raw, options = null) {
   const prepared = sanitizedThumb === (raw.thumbnail || null)
     ? raw
     : { ...raw, thumbnail: sanitizedThumb };
+  const rawUnavailable = isUnavailableMediaSnapshot(prepared);
   let enriched = mergeMediaArtworkFromCache(prepared);
 
   // For browser-based media sessions prefer stable external artwork over app icons.
@@ -3372,7 +3555,29 @@ function updateMediaCacheFromStream(raw, options = null) {
   mediaStreamBufferTrimCount = 0;
   queueMediaArtworkHydration(stabilized);
   queueMediaSessionThumbnailHydration(stabilized);
-  mediaPrimaryRetryNotBefore = 0;
+  if (rawUnavailable || isUnavailableMediaSnapshot(stabilized)) {
+    const retryBackoffMs = noteMediaPrimarySampleFailure();
+    if (sourceTag === 'media-stream') {
+      mediaStreamConsecutiveUnavailable += 1;
+    }
+    if (shouldLogMediaPrimaryFailure()) {
+      diagLog('WARN', 'media-stream', 'stream reported unavailable media session', {
+        source: sourceTag,
+        error: (prepared && prepared.error) || (stabilized && stabilized.error) || null,
+        consecutiveFailures: mediaPrimaryConsecutiveFailures,
+        streamConsecutiveUnavailable: mediaStreamConsecutiveUnavailable,
+        retryBackoffMs,
+      });
+    }
+    if (sourceTag === 'media-stream'
+        && mediaStreamConsecutiveUnavailable >= MEDIA_STREAM_UNAVAILABLE_RECYCLE_THRESHOLD) {
+      mediaStreamConsecutiveUnavailable = 0;
+      suspendMediaStreamAfterUnavailable('repeated-unavailable', MEDIA_STREAM_UNAVAILABLE_RESTART_BACKOFF_MS);
+    }
+  } else {
+    mediaStreamConsecutiveUnavailable = 0;
+    resetMediaPrimarySampleFailures();
+  }
   if (sseClients.size > 0 && (now - lastMediaSsePushedAt) >= MEDIA_SSE_PUSH_MIN_INTERVAL_MS) {
     lastMediaSsePushedAt = now;
     broadcastSSE('media', stabilized);
@@ -3382,6 +3587,7 @@ function updateMediaCacheFromStream(raw, options = null) {
 
 function processMediaStreamChunk(chunk) {
   if (!chunk) return;
+  mediaStreamLastOutputAt = Date.now();
   mediaStreamBuffer += String(chunk);
   if (mediaStreamBuffer.length > MEDIA_STREAM_MAX_BUFFER_CHARS) {
     const droppedChars = mediaStreamBuffer.length - MEDIA_STREAM_MAX_BUFFER_CHARS;
@@ -3408,7 +3614,9 @@ function processMediaStreamChunk(chunk) {
     mediaStreamBuffer = mediaStreamBuffer.slice(newlineIndex + 1);
     if (!line) continue;
     try {
-      updateMediaCacheFromStream(JSON.parse(line));
+      const parsed = JSON.parse(line);
+      mediaStreamLastSampleAt = Date.now();
+      updateMediaCacheFromStream(parsed, { sourceTag: 'media-stream' });
     } catch (error) {
       mediaStreamConsecutiveParseErrors += 1;
       if (mediaStreamConsecutiveParseErrors <= 3 || mediaStreamConsecutiveParseErrors % 5 === 0) {
@@ -3444,6 +3652,7 @@ function waitForMediaStreamSample(timeoutMs = MEDIA_STREAM_WAIT_MS) {
         cacheAgeMs: Date.now() - Number(mediaCache.updatedAt || 0),
         waitersPending: mediaStreamWaiters.size,
       });
+      checkMediaStreamHealth('sample-timeout');
       resolve(false);
     }, Math.max(40, Number(timeoutMs) || MEDIA_STREAM_WAIT_MS));
     mediaStreamWaiters.set(waiterId, hasSample => {
@@ -3464,6 +3673,10 @@ function stopMediaStream() {
   mediaStreamBuffer = '';
   mediaStreamConsecutiveParseErrors = 0;
   mediaStreamBufferTrimCount = 0;
+  mediaStreamConsecutiveUnavailable = 0;
+  mediaStreamStartedAt = 0;
+  mediaStreamLastOutputAt = 0;
+  mediaStreamLastSampleAt = 0;
   resolveMediaStreamWaiters(false);
   diagLog('INFO', 'media-stream', 'stopping media stream process', {
     pid: proc && proc.pid ? proc.pid : null,
@@ -3494,6 +3707,10 @@ function ensureMediaStreamRunning() {
   mediaStreamBuffer = '';
   mediaStreamConsecutiveParseErrors = 0;
   mediaStreamBufferTrimCount = 0;
+  mediaStreamConsecutiveUnavailable = 0;
+  mediaStreamStartedAt = Date.now();
+  mediaStreamLastOutputAt = 0;
+  mediaStreamLastSampleAt = 0;
   diagLog('INFO', 'media-stream', 'spawning media stream process', {
     dll: AUDIOCTL_DLL,
     intervalMs: MEDIA_STREAM_INTERVAL_MS,
@@ -3532,8 +3749,16 @@ function ensureMediaStreamRunning() {
 
   child.on('error', error => {
     mediaStreamStarting = false;
-    mediaStreamRestartNotBefore = Date.now() + MEDIA_STREAM_RESTART_BACKOFF_MS;
-    if (mediaStreamProcess === child) mediaStreamProcess = null;
+    mediaStreamRestartNotBefore = Math.max(
+      mediaStreamRestartNotBefore,
+      Date.now() + MEDIA_STREAM_RESTART_BACKOFF_MS,
+    );
+    if (mediaStreamProcess === child) {
+      mediaStreamProcess = null;
+      mediaStreamStartedAt = 0;
+      mediaStreamLastOutputAt = 0;
+      mediaStreamLastSampleAt = 0;
+    }
     diagLog('ERROR', 'media-stream', 'media stream process error', {
       pid: child.pid || null,
       backoffMs: MEDIA_STREAM_RESTART_BACKOFF_MS,
@@ -3542,9 +3767,17 @@ function ensureMediaStreamRunning() {
   });
 
   child.on('close', (code, signal) => {
-    if (mediaStreamProcess === child) mediaStreamProcess = null;
+    if (mediaStreamProcess === child) {
+      mediaStreamProcess = null;
+      mediaStreamStartedAt = 0;
+      mediaStreamLastOutputAt = 0;
+      mediaStreamLastSampleAt = 0;
+    }
     mediaStreamStarting = false;
-    mediaStreamRestartNotBefore = Date.now() + MEDIA_STREAM_RESTART_BACKOFF_MS;
+    mediaStreamRestartNotBefore = Math.max(
+      mediaStreamRestartNotBefore,
+      Date.now() + MEDIA_STREAM_RESTART_BACKOFF_MS,
+    );
     diagLog('WARN', 'media-stream', 'media stream process closed', {
       pid: child.pid || null,
       code,
@@ -3580,9 +3813,10 @@ async function getMediaInfo(force = false) {
       cacheAgeMs: Date.now() - Number(mediaCache.updatedAt || 0),
       streamProcessPid: mediaStreamProcess && mediaStreamProcess.pid ? mediaStreamProcess.pid : null,
     });
+    checkMediaStreamHealth('fallback-path');
 
     const now = Date.now();
-    if (!force && now < mediaPrimaryRetryNotBefore) {
+    if (now < mediaPrimaryRetryNotBefore) {
       const previousData = mediaCache.data;
       const previousAgeMs = Date.now() - Number(mediaCache.updatedAt || 0);
       const cachedAudioFallback = buildMediaFallbackFromAudioApps(
@@ -3612,6 +3846,9 @@ async function getMediaInfo(force = false) {
     }
 
     try {
+      if (Date.now() < mediaPrimaryRetryNotBefore) {
+        throw new Error('Media session retry backoff active');
+      }
       const sampled = await sampleMediaCache(true);
       if (sampled && mediaCache.data) {
         const age = Date.now() - Number(mediaCache.updatedAt || 0);
@@ -3624,10 +3861,13 @@ async function getMediaInfo(force = false) {
       throw new Error('Media sample unavailable');
     } catch (e) {
       const message = String(e && e.message || '');
-      mediaPrimaryRetryNotBefore = Date.now() + MEDIA_PRIMARY_RETRY_BACKOFF_MS;
+      const retryBackoffMs = mediaPrimaryRetryNotBefore > Date.now()
+        ? Math.max(0, mediaPrimaryRetryNotBefore - Date.now())
+        : noteMediaPrimarySampleFailure();
       diagLog('ERROR', 'media', 'media primary sampling failed', {
         message,
-        retryBackoffMs: MEDIA_PRIMARY_RETRY_BACKOFF_MS,
+        consecutiveFailures: mediaPrimaryConsecutiveFailures,
+        retryBackoffMs,
       });
       const cached = mediaCache.data;
       const cachedUnavailable = !cached || String(cached.playbackStatus || '').toLowerCase() === 'unavailable';
@@ -3663,14 +3903,18 @@ async function getMediaInfo(force = false) {
 
 async function sampleMediaCache(includeArtwork = false) {
   if (mediaSampleInFlight) return false;
+  if (Date.now() < mediaPrimaryRetryNotBefore) return false;
   mediaSampleInFlight = true;
   try {
     const fromAudioCtl = await runAudioCtlJson(['media-info'], includeArtwork ? 9000 : 7000);
     if (!(fromAudioCtl && fromAudioCtl.ok && fromAudioCtl.data)) {
+      const retryBackoffMs = noteMediaPrimarySampleFailure();
       diagLog('WARN', 'media', 'media-info returned no usable data', {
         includeArtwork,
         available: !!(fromAudioCtl && fromAudioCtl.available),
         code: fromAudioCtl && Object.prototype.hasOwnProperty.call(fromAudioCtl, 'code') ? fromAudioCtl.code : null,
+        consecutiveFailures: mediaPrimaryConsecutiveFailures,
+        retryBackoffMs,
       });
       return false;
     }
@@ -3679,20 +3923,26 @@ async function sampleMediaCache(includeArtwork = false) {
       : fromAudioCtl.data;
     const status = String(data && data.playbackStatus || '').toLowerCase();
     if (status === 'unavailable' && data && data.error) {
+      const retryBackoffMs = noteMediaPrimarySampleFailure();
       diagLog('WARN', 'media', 'media-info unavailable status received', {
         includeArtwork,
         error: data.error,
+        consecutiveFailures: mediaPrimaryConsecutiveFailures,
+        retryBackoffMs,
       });
       return false;
     }
     const hydrated = includeArtwork ? await hydrateArtwork(data) : data;
     updateMediaCacheFromStream(hydrated, { sourceTag: 'media-info' });
-    mediaPrimaryRetryNotBefore = 0;
+    resetMediaPrimarySampleFailures();
     return true;
   } catch (error) {
+    const retryBackoffMs = noteMediaPrimarySampleFailure();
     diagLog('ERROR', 'media', 'media-info sampling threw exception', {
       includeArtwork,
       error: error && error.message ? error.message : String(error || 'unknown'),
+      consecutiveFailures: mediaPrimaryConsecutiveFailures,
+      retryBackoffMs,
     });
     return false;
   } finally {
@@ -3914,16 +4164,23 @@ async function getMediaFallback(error) {
 }
 
 async function getMediaInfoPrimary() {
+  if (Date.now() < mediaPrimaryRetryNotBefore) {
+    throw new Error('Media session retry backoff active');
+  }
+
   const fromAudioCtl = await runAudioCtlJson(['media-info'], 9000);
   if (fromAudioCtl && fromAudioCtl.ok && fromAudioCtl.data) {
     const data = fromAudioCtl.data;
     const status = String(data && data.playbackStatus || '').toLowerCase();
     if (!(status === 'unavailable' && data && data.error)) {
+      resetMediaPrimarySampleFailures();
       return data;
     }
+    noteMediaPrimarySampleFailure();
     throw new Error(String(data.error || 'AudioCtl media unavailable'));
   }
 
+  noteMediaPrimarySampleFailure();
   if (!fromAudioCtl.available) throw new Error('AudioCtl unavailable');
   throw new Error('AudioCtl media unavailable');
 }
@@ -3951,7 +4208,7 @@ function applyOptimisticMediaPlayPauseStatus() {
 
   mediaCache = { data: updated, updatedAt: now };
   setMediaTimelineState(position, duration, nextStatus, key, now, position);
-  mediaPrimaryRetryNotBefore = 0;
+  resetMediaPrimarySampleFailures();
 
   if (sseClients.size > 0 && (now - lastMediaSsePushedAt) >= MEDIA_SSE_PUSH_MIN_INTERVAL_MS) {
     lastMediaSsePushedAt = now;
@@ -3969,18 +4226,54 @@ async function mediaAction(action, extraArgs = []) {
 
   if (!mappedArgs) throw new Error(`Unsupported media action: ${normalizedAction}`);
 
+  const now = Date.now();
+  if (now < mediaActionRetryNotBefore) {
+    const retryAfterMs = Math.max(0, mediaActionRetryNotBefore - now);
+    diagLog('WARN', 'media', 'media action skipped during retry backoff', {
+      action: normalizedAction,
+      retryAfterMs,
+    });
+    return {
+      ok: false,
+      position: 0,
+      duration: 0,
+      error: 'Media session temporarily unavailable',
+      retryAfterMs,
+    };
+  }
+
   const fromAudioCtl = await runAudioCtlJson(mappedArgs, 7600);
-  if (!fromAudioCtl.available) throw new Error('AudioCtl unavailable');
-  if (!fromAudioCtl.ok || !fromAudioCtl.data) throw new Error('AudioCtl media action unavailable');
+  if (!fromAudioCtl.available) {
+    noteMediaActionFailure();
+    throw new Error('AudioCtl unavailable');
+  }
+  if (!fromAudioCtl.ok || !fromAudioCtl.data) {
+    const retryBackoffMs = noteMediaActionFailure();
+    diagLog('WARN', 'media', 'media action command failed', {
+      action: normalizedAction,
+      consecutiveFailures: mediaActionConsecutiveFailures,
+      retryBackoffMs,
+    });
+    throw new Error('AudioCtl media action unavailable');
+  }
 
   const actionResult = fromAudioCtl.data;
   const actionOk = !(actionResult && typeof actionResult === 'object' && actionResult.ok === false);
   if (actionOk) {
+    resetMediaActionFailures();
     if (normalizedAction === 'playpause') {
       if (!applyOptimisticMediaPlayPauseStatus()) mediaCache.updatedAt = 0;
     } else {
       mediaCache.updatedAt = 0;
     }
+  } else {
+    const retryBackoffMs = noteMediaActionFailure();
+    diagLog('WARN', 'media', 'media action returned failure', {
+      action: normalizedAction,
+      error: actionResult && actionResult.error ? actionResult.error : null,
+      consecutiveFailures: mediaActionConsecutiveFailures,
+      retryBackoffMs,
+    });
   }
   return actionResult;
 }
@@ -4208,27 +4501,94 @@ function getAudioInfoFromSoundVolumeView() {
   return readSoundVolumeRows().then(rows => buildAudioInfoFromRows(rows));
 }
 
-async function getAudioInfoFromAudioCtl() {
-  const result = await runAudioCtlJson(['snapshot'], 3200);
-  if (!result.ok || !result.data) return null;
-  try {
-    lastAudioCtlRawSnapshot = result.data;
-    lastAudioCtlRawUpdatedAt = Date.now();
-    const transformed = buildAudioInfoFromAudioCtlSnapshot(result.data);
-    if (transformed) {
-      lastAudioInfoSnapshot = transformed;
-      lastAudioInfoUpdatedAt = Date.now();
-    }
-    return transformed;
-  } catch (error) {
-    console.warn('[AudioCtl] Snapshot transform failed:', error && error.message ? error.message : error);
-    return null;
+function cloneAudioInfoSnapshot(snapshot, stale = false) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const apps = Array.isArray(snapshot.apps)
+    ? snapshot.apps.map(item => {
+      const copy = { ...item };
+      applyAppAudioOverride(copy);
+      return copy;
+    })
+    : [];
+  const cloned = {
+    ...snapshot,
+    speaker: snapshot.speaker ? applyDeviceAudioOverride({ ...snapshot.speaker }, speakerAudioOverride) : null,
+    mic: snapshot.mic ? applyDeviceAudioOverride({ ...snapshot.mic }, micAudioOverride) : null,
+    speakers: Array.isArray(snapshot.speakers) ? snapshot.speakers.map(item => ({ ...item })) : [],
+    mics: Array.isArray(snapshot.mics) ? snapshot.mics.map(item => ({ ...item })) : [],
+    apps,
+  };
+  if (stale) {
+    cloned.stale = true;
+    cloned.staleMs = Math.max(0, Date.now() - Number(lastAudioInfoUpdatedAt || 0));
   }
+  return cloned;
+}
+
+async function getAudioInfoFromAudioCtl() {
+  const now = Date.now();
+  if (lastAudioInfoSnapshot && (now - Number(lastAudioInfoUpdatedAt || 0)) <= AUDIO_SNAPSHOT_CACHE_FRESH_MS) {
+    return cloneAudioInfoSnapshot(lastAudioInfoSnapshot);
+  }
+  if (audioSnapshotInFlight) return audioSnapshotInFlight;
+  if (now < audioSnapshotRetryNotBefore) return null;
+
+  audioSnapshotInFlight = (async () => {
+    const result = await runAudioCtlJson(['snapshot'], 4800);
+    if (!result.ok || !result.data) {
+      const retryBackoffMs = noteAudioSnapshotFailure();
+      if (shouldLogAudioSnapshotFailure()) {
+        diagLog('WARN', 'audioctl', 'snapshot command returned no usable data', {
+          available: !!(result && result.available),
+          code: result && Object.prototype.hasOwnProperty.call(result, 'code') ? result.code : null,
+          consecutiveFailures: audioSnapshotConsecutiveFailures,
+          retryBackoffMs,
+        });
+      }
+      return null;
+    }
+    try {
+      lastAudioCtlRawSnapshot = result.data;
+      lastAudioCtlRawUpdatedAt = Date.now();
+      const transformed = buildAudioInfoFromAudioCtlSnapshot(result.data);
+      if (transformed) {
+        resetAudioSnapshotFailures();
+        lastAudioInfoSnapshot = transformed;
+        lastAudioInfoUpdatedAt = Date.now();
+      } else {
+        const retryBackoffMs = noteAudioSnapshotFailure();
+        if (shouldLogAudioSnapshotFailure()) {
+          diagLog('WARN', 'audioctl', 'snapshot transform produced no devices', {
+            consecutiveFailures: audioSnapshotConsecutiveFailures,
+            retryBackoffMs,
+          });
+        }
+      }
+      return transformed ? cloneAudioInfoSnapshot(transformed) : null;
+    } catch (error) {
+      const retryBackoffMs = noteAudioSnapshotFailure();
+      console.warn('[AudioCtl] Snapshot transform failed:', error && error.message ? error.message : error);
+      diagLog('WARN', 'audioctl', 'snapshot transform failed', {
+        error: error && error.message ? error.message : String(error || 'unknown'),
+        consecutiveFailures: audioSnapshotConsecutiveFailures,
+        retryBackoffMs,
+      });
+      return null;
+    }
+  })().finally(() => {
+    audioSnapshotInFlight = null;
+  });
+
+  return audioSnapshotInFlight;
 }
 
 async function getAudioInfo() {
   const fast = await getAudioInfoFromAudioCtl();
   if (fast) return fast;
+  if (lastAudioInfoSnapshot
+      && (Date.now() - Number(lastAudioInfoUpdatedAt || 0)) <= AUDIO_SNAPSHOT_STALE_GRACE_MS) {
+    return cloneAudioInfoSnapshot(lastAudioInfoSnapshot, true);
+  }
   if (!areFallbacksEnabled()) {
     throw new Error('AudioCtl unavailable and fallbacks are disabled');
   }
@@ -4286,6 +4646,8 @@ function resolveAudioActivityStreamWaiters(hasSample) {
 function updateAudioActivityCache(raw) {
   const normalized = normalizeAudioActivitySnapshot(raw);
   audioActivityCache = { ...normalized, updatedAt: Date.now() };
+  audioActivityStreamLastSampleAt = Date.now();
+  resetAudioActivityFailures();
   const now = Date.now();
   if (sseClients.size > 0 && (now - lastAudioActivitySsePushedAt) >= AUDIO_ACTIVITY_SSE_PUSH_MIN_INTERVAL_MS) {
     lastAudioActivitySsePushedAt = now;
@@ -4296,6 +4658,7 @@ function updateAudioActivityCache(raw) {
 
 function processAudioActivityStreamChunk(chunk) {
   if (!chunk) return;
+  audioActivityStreamLastOutputAt = Date.now();
   audioActivityStreamBuffer += String(chunk);
   if (audioActivityStreamBuffer.length > AUDIO_ACTIVITY_STREAM_MAX_BUFFER_CHARS) {
     audioActivityStreamBuffer = audioActivityStreamBuffer.slice(-AUDIO_ACTIVITY_STREAM_MAX_BUFFER_CHARS);
@@ -4326,6 +4689,7 @@ function waitForAudioActivityStreamSample(timeoutMs = AUDIO_ACTIVITY_STREAM_WAIT
     const timer = setTimeout(() => {
       if (!audioActivityStreamWaiters.has(waiterId)) return;
       audioActivityStreamWaiters.delete(waiterId);
+      checkAudioActivityStreamHealth('sample-timeout');
       resolve(false);
     }, Math.max(40, Number(timeoutMs) || AUDIO_ACTIVITY_STREAM_WAIT_MS));
 
@@ -4341,6 +4705,9 @@ function stopAudioActivityStream() {
   audioActivityStreamProcess = null;
   audioActivityStreamBuffer = '';
   audioActivityStreamStarting = false;
+  audioActivityStreamStartedAt = 0;
+  audioActivityStreamLastOutputAt = 0;
+  audioActivityStreamLastSampleAt = 0;
   resolveAudioActivityStreamWaiters(false);
   diagLog('INFO', 'audio-activity-stream', 'stopping audio activity stream process', {
     pid: proc && proc.pid ? proc.pid : null,
@@ -4357,6 +4724,9 @@ function ensureAudioActivityStreamRunning() {
 
   audioActivityStreamStarting = true;
   audioActivityStreamBuffer = '';
+  audioActivityStreamStartedAt = Date.now();
+  audioActivityStreamLastOutputAt = 0;
+  audioActivityStreamLastSampleAt = 0;
   diagLog('INFO', 'audio-activity-stream', 'spawning audio activity stream process', {
     dll: AUDIOCTL_DLL,
     intervalMs: AUDIO_ACTIVITY_STREAM_INTERVAL_MS,
@@ -4396,9 +4766,15 @@ function ensureAudioActivityStreamRunning() {
 
   child.on('error', error => {
     audioActivityStreamStarting = false;
-    audioActivityStreamRestartNotBefore = Date.now() + AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS;
+    audioActivityStreamRestartNotBefore = Math.max(
+      audioActivityStreamRestartNotBefore,
+      Date.now() + AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS,
+    );
     if (audioActivityStreamProcess === child) {
       audioActivityStreamProcess = null;
+      audioActivityStreamStartedAt = 0;
+      audioActivityStreamLastOutputAt = 0;
+      audioActivityStreamLastSampleAt = 0;
     }
     diagLog('ERROR', 'audio-activity-stream', 'audio activity stream process error', {
       pid: child.pid || null,
@@ -4410,9 +4786,15 @@ function ensureAudioActivityStreamRunning() {
   child.on('close', (code, signal) => {
     if (audioActivityStreamProcess === child) {
       audioActivityStreamProcess = null;
+      audioActivityStreamStartedAt = 0;
+      audioActivityStreamLastOutputAt = 0;
+      audioActivityStreamLastSampleAt = 0;
     }
     audioActivityStreamStarting = false;
-    audioActivityStreamRestartNotBefore = Date.now() + AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS;
+    audioActivityStreamRestartNotBefore = Math.max(
+      audioActivityStreamRestartNotBefore,
+      Date.now() + AUDIO_ACTIVITY_STREAM_RESTART_BACKOFF_MS,
+    );
     diagLog('WARN', 'audio-activity-stream', 'audio activity stream process closed', {
       pid: child.pid || null,
       code,
@@ -4424,13 +4806,18 @@ function ensureAudioActivityStreamRunning() {
 
 async function sampleAudioActivityCache() {
   if (audioActivitySampleInFlight) return false;
+  if (Date.now() < audioActivityRetryNotBefore) return false;
   audioActivitySampleInFlight = true;
   try {
-    const fast = await runAudioCtlJson(['activity'], 700);
+    const fast = await runAudioCtlJson(['activity'], 1200);
     if (fast.ok && fast.data) {
       updateAudioActivityCache(fast.data);
       return true;
     }
+    noteAudioActivityFailure();
+    return false;
+  } catch {
+    noteAudioActivityFailure();
     return false;
   } finally {
     audioActivitySampleInFlight = false;
@@ -4452,6 +4839,7 @@ function serializeAudioActivitySnapshot(snapshot, decay = 1) {
 async function getAudioActivityInfo() {
   lastAudioActivityRequestAt = Date.now();
   ensureAudioActivityStreamRunning();
+  checkAudioActivityStreamHealth('request');
 
   const ageMs = Date.now() - Number(audioActivityCache.updatedAt || 0);
   if (audioActivityCache.updatedAt && ageMs <= AUDIO_ACTIVITY_CACHE_FRESH_MS) {
@@ -4651,8 +5039,14 @@ async function runAudioCtlJson(args, timeout = 3000) {
     const maxBuffer = primaryArg === 'media-info'
       ? (8 * 1024 * 1024)
       : (1024 * 1024);
-    const { stdout } = await execFilePromise(DOTNET_BIN, [AUDIOCTL_DLL, ...args], { timeout, maxBuffer });
-    return { ok: true, available: true, code: 0, data: parseJsonOutput(stdout) };
+    const { stdout, stderr } = await execFilePromise(DOTNET_BIN, [AUDIOCTL_DLL, ...args], { timeout, maxBuffer });
+    try {
+      return { ok: true, available: true, code: 0, data: parseJsonOutput(stdout) };
+    } catch (error) {
+      error.stdout = stdout;
+      error.stderr = stderr;
+      throw error;
+    }
   } catch (error) {
     const code = Number.isFinite(Number(error && error.code)) ? Number(error.code) : null;
     const primaryArg = Array.isArray(args) && args.length ? String(args[0]).toLowerCase() : '';
@@ -4668,6 +5062,10 @@ async function runAudioCtlJson(args, timeout = 3000) {
         timeout,
         code,
         error: error && error.message ? error.message : String(error || 'unknown'),
+        killed: !!(error && error.killed),
+        signal: error && error.signal ? error.signal : null,
+        stdoutChars: error && typeof error.stdout === 'string' ? error.stdout.length : null,
+        stderr: error && error.stderr ? String(error.stderr).trim().slice(0, 1000) : null,
       });
     }
     return { ok: false, available: true, code, data: null };
@@ -5288,9 +5686,19 @@ function collectCounterSnapshot(state, historyDays = COUNTER_HISTORY_DAYS_MAX, n
   const safeDays = Math.max(1, Math.min(COUNTER_HISTORY_DAYS_MAX, Math.round(Number(historyDays) || COUNTER_HISTORY_DAYS_MAX)));
   const today = startOfLocalDay(new Date(now));
   const todayKey = toLocalDateKey(today);
+  const monthStart = startOfLocalDay(new Date(today.getFullYear(), today.getMonth(), 1));
+  const monthStartMs = monthStart.getTime();
   const windowStart = startOfLocalDay(addLocalDays(today, -(safeDays - 1)));
   const windowStartMs = windowStart.getTime();
   const windowEndMs = startOfLocalDay(addLocalDays(today, 1)).getTime();
+  let monthMs = 0;
+
+  const addMonthOverlap = (startMs, endMs) => {
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return;
+    const overlapStart = Math.max(startMs, monthStartMs);
+    const overlapEnd = Math.min(endMs, windowEndMs);
+    if (overlapEnd > overlapStart) monthMs += overlapEnd - overlapStart;
+  };
 
   const dayMap = new Map();
   for (let i = 0; i < safeDays; i++) {
@@ -5324,6 +5732,7 @@ function collectCounterSnapshot(state, historyDays = COUNTER_HISTORY_DAYS_MAX, n
     let startMs = Date.parse(session && session.startAt);
     const endMs = Date.parse(session && session.endAt);
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return;
+    addMonthOverlap(startMs, endMs);
     if (endMs <= windowStartMs || startMs >= windowEndMs) return;
     if (startMs < windowStartMs) startMs = windowStartMs;
     let cursor = startMs;
@@ -5339,6 +5748,7 @@ function collectCounterSnapshot(state, historyDays = COUNTER_HISTORY_DAYS_MAX, n
   if (state && state.active) {
     const activeStartMsRaw = Date.parse(state.active.startAt);
     if (Number.isFinite(activeStartMsRaw) && activeStartMsRaw < now) {
+      addMonthOverlap(activeStartMsRaw, now);
       let activeStartMs = activeStartMsRaw;
       if (activeStartMs < windowStartMs) activeStartMs = windowStartMs;
       let cursor = activeStartMs;
@@ -5364,7 +5774,7 @@ function collectCounterSnapshot(state, historyDays = COUNTER_HISTORY_DAYS_MAX, n
     acc.windowMs += day.totalMs;
     if (day.date === todayKey) acc.todayMs = day.totalMs;
     return acc;
-  }, { windowMs: 0, todayMs: 0 });
+  }, { windowMs: 0, todayMs: 0, monthMs });
 
   return {
     nowAt: toLocalDateTimeString(new Date(now)),
@@ -6404,6 +6814,7 @@ setInterval(() => {
   }
 
   ensureAudioActivityStreamRunning();
+  checkAudioActivityStreamHealth('keepalive');
   const ageMs = Date.now() - Number(audioActivityCache.updatedAt || 0);
   if (!audioActivityCache.updatedAt || ageMs > AUDIO_ACTIVITY_CACHE_STALE_MS) {
     sampleAudioActivityCache().catch(() => {});
@@ -6421,8 +6832,9 @@ setInterval(() => {
   }
 
   ensureMediaStreamRunning();
+  checkMediaStreamHealth('keepalive');
   const ageMs = Date.now() - Number(mediaCache.updatedAt || 0);
-  if (!mediaCache.updatedAt || ageMs > MEDIA_STREAM_CACHE_STALE_MS) {
+  if ((!mediaCache.updatedAt || ageMs > MEDIA_STREAM_CACHE_STALE_MS) && Date.now() >= mediaPrimaryRetryNotBefore) {
     sampleMediaCache(false).catch(() => {});
   }
 }, 120).unref();

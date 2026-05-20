@@ -120,6 +120,7 @@ function openCalendarOverlay() {
   calendarMode = true;
   calendarAutoShown = false;
   if (typeof switchCalendarTaskView === 'function') switchCalendarTaskView('calendar', { persist: false });
+  if (typeof refreshHourCounter === 'function') refreshHourCounter();
   updateCalendarMiniPlayer();
   renderCalendar();
   if ('Notification' in window && Notification.permission === 'default') {
@@ -263,9 +264,104 @@ function eventsForDate(dateValue) {
     });
 }
 
+function appendCalendarDayLabel(cell, events, className, fallbackText) {
+  if (!events.length) return;
+  const label = document.createElement('span');
+  label.className = className;
+  const baseTitle = events[0] && events[0].title ? events[0].title : fallbackText;
+  label.textContent = events.length > 1 ? `${baseTitle} +${events.length - 1}` : baseTitle;
+  label.title = events
+    .map(event => event && event.title ? event.title : fallbackText)
+    .filter(Boolean)
+    .join(' · ');
+  cell.appendChild(label);
+}
+
+function formatCalendarCounterDuration(ms) {
+  const safe = Math.max(0, Number(ms) || 0);
+  const hours = Math.floor(safe / 3600000);
+  const minutes = Math.floor((safe % 3600000) / 60000);
+  return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+}
+
+function getCalendarCounterDayTotalMs(dateValue) {
+  if (typeof getHourCounterDayTotalMs !== 'function') return 0;
+  const totalMs = Number(getHourCounterDayTotalMs(dateValue));
+  return Number.isFinite(totalMs) ? Math.max(0, totalMs) : 0;
+}
+
+function createCalendarCounterHammerIcon() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const pathOne = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  pathOne.setAttribute('d', 'm15 12-8.5 8.5a2.1 2.1 0 0 1-3-3L12 9');
+  const pathTwo = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  pathTwo.setAttribute('d', 'm12 5.5 6.5 6.5 1.6-1.6a2 2 0 0 0 0-2.8l-3.7-3.7a2 2 0 0 0-2.8 0L12 5.5Z');
+  svg.appendChild(pathOne);
+  svg.appendChild(pathTwo);
+  return svg;
+}
+
+function updateCalendarCellTitle(cell, counterText = '') {
+  if (!cell) return;
+  const baseTitle = String(cell.dataset.calendarTitleBase || '').trim();
+  const parts = [];
+  if (baseTitle) parts.push(baseTitle);
+  if (counterText) parts.push(`${t('counter_daily_total')}: ${counterText}`);
+  if (parts.length) cell.title = parts.join(' · ');
+  else cell.removeAttribute('title');
+}
+
+function syncCalendarCounterDayLabel(cell, dateValue) {
+  if (!cell) return;
+  const totalMs = getCalendarCounterDayTotalMs(dateValue);
+  const existing = cell.querySelector('.day-cell-counter');
+
+  if (totalMs <= 0) {
+    if (existing) existing.remove();
+    cell.classList.remove('has-counter-hours');
+    updateCalendarCellTitle(cell, '');
+    return;
+  }
+
+  const labelText = formatCalendarCounterDuration(totalMs);
+  let label = existing;
+  if (!label) {
+    label = document.createElement('span');
+    label.className = 'day-cell-counter';
+    label.appendChild(createCalendarCounterHammerIcon());
+    const value = document.createElement('span');
+    value.className = 'day-cell-counter-value';
+    label.appendChild(value);
+    const firstEventLabel = cell.querySelector('.day-cell-event, .day-cell-holiday');
+    if (firstEventLabel) cell.insertBefore(label, firstEventLabel);
+    else cell.appendChild(label);
+  }
+  const value = label.querySelector('.day-cell-counter-value');
+  if (value) value.textContent = labelText;
+  label.title = `${t('counter_daily_total')}: ${labelText}`;
+  cell.classList.add('has-counter-hours');
+  updateCalendarCellTitle(cell, labelText);
+}
+
+function syncCalendarCounterDayLabels() {
+  const dayCells = document.querySelectorAll('#calendar-days .day-cell[data-calendar-date]');
+  dayCells.forEach(cell => syncCalendarCounterDayLabel(cell, cell.dataset.calendarDate));
+}
+
+function openCalendarDayTile(dateValue) {
+  const targetDate = new Date(`${dateValue}T00:00:00`);
+  if (!Number.isNaN(targetDate.getTime())) {
+    calendarViewDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), 1);
+  }
+  openDayModal(dateValue);
+}
+
 function renderCalendar() {
   const locale = t('locale');
   const monthLabel = new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' }).format(calendarViewDate);
+  const compactMonthFormatter = new Intl.DateTimeFormat(locale, { month: 'short' });
   $('calendar-month').textContent = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
 
   const weekdays = $('calendar-weekdays');
@@ -284,20 +380,19 @@ function renderCalendar() {
   const offset = (first.getDay() + 6) % 7;
   const totalDays = new Date(year, month + 1, 0).getDate();
   const todayValue = toDateInputValue(new Date());
-  days.style.setProperty('--calendar-weeks', String(Math.ceil((offset + totalDays) / 7)));
+  const calendarWeeks = Math.ceil((offset + totalDays) / 7);
+  const visibleDays = calendarWeeks * 7;
+  days.style.setProperty('--calendar-weeks', String(calendarWeeks));
 
-  for (let i = 0; i < offset; i++) {
-    const empty = document.createElement('button');
-    empty.className = 'day-cell empty';
-    empty.tabIndex = -1;
-    days.appendChild(empty);
-  }
-
-  for (let day = 1; day <= totalDays; day++) {
-    const dateValue = toDateInputValue(new Date(year, month, day));
+  for (let index = 0; index < visibleDays; index++) {
+    const cellDate = new Date(year, month, index - offset + 1);
+    const dateValue = toDateInputValue(cellDate);
+    const isCurrentMonth = cellDate.getMonth() === month;
     const cell = document.createElement('button');
     cell.type = 'button';
     cell.className = 'day-cell';
+    cell.dataset.calendarDate = dateValue;
+    if (!isCurrentMonth) cell.classList.add('adjacent-month');
     const dayEvents = eventsForDate(dateValue);
     const dayHolidays = dayEvents.filter(isHolidayCalendarEvent);
     const dayRegularEvents = dayEvents.filter(event => !isHolidayCalendarEvent(event));
@@ -306,19 +401,28 @@ function renderCalendar() {
     if (dayRegularEvents.length) cell.classList.add('has-events');
     if (dayHolidays.length) cell.classList.add('has-holidays');
     if (dayEvents.some(event => String(event && event.source || '').toLowerCase() === 'ical')) cell.classList.add('has-remote-events');
+    const dayTitles = dayEvents
+      .map(event => event && event.title ? event.title : (isHolidayCalendarEvent(event) ? t('calendar_holiday') : t('ph_title')))
+      .filter(Boolean);
+    cell.dataset.calendarTitleBase = dayTitles.join(' · ');
+    updateCalendarCellTitle(cell);
     const dayNumber = document.createElement('span');
     dayNumber.className = 'day-cell-number';
-    dayNumber.textContent = String(day);
-    cell.appendChild(dayNumber);
-    if (dayHolidays.length) {
-      const holidayLabel = document.createElement('span');
-      holidayLabel.className = 'day-cell-holiday';
-      const baseTitle = dayHolidays[0] && dayHolidays[0].title ? dayHolidays[0].title : t('calendar_holiday');
-      holidayLabel.textContent = dayHolidays.length > 1 ? `${baseTitle} +${dayHolidays.length - 1}` : baseTitle;
-      holidayLabel.title = dayHolidays.map(event => event && event.title ? event.title : t('calendar_holiday')).filter(Boolean).join(' · ');
-      cell.appendChild(holidayLabel);
+    if (!isCurrentMonth) {
+      const monthTag = document.createElement('span');
+      monthTag.className = 'day-cell-month';
+      monthTag.textContent = compactMonthFormatter.format(cellDate).replace(/\.$/, '');
+      dayNumber.appendChild(monthTag);
     }
-    cell.onclick = () => openDayModal(dateValue);
+    const dayNumberValue = document.createElement('span');
+    dayNumberValue.className = 'day-cell-day';
+    dayNumberValue.textContent = String(cellDate.getDate());
+    dayNumber.appendChild(dayNumberValue);
+    cell.appendChild(dayNumber);
+    syncCalendarCounterDayLabel(cell, dateValue);
+    appendCalendarDayLabel(cell, dayRegularEvents, 'day-cell-event', t('ph_title'));
+    appendCalendarDayLabel(cell, dayHolidays, 'day-cell-holiday', t('calendar_holiday'));
+    cell.onclick = () => openCalendarDayTile(dateValue);
     days.appendChild(cell);
   }
 
