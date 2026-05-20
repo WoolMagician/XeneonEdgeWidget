@@ -70,6 +70,7 @@ const MIXER_PROCESS_ICON_REFRESH_INTERVAL_MS = 1300;
 const MIXER_MEDIA_SERVICE_ICON_BY_TOKEN = Object.freeze({
   jellyfin: 'https://upload.wikimedia.org/wikipedia/commons/4/41/Jellyfin_-_icon-transparent.svg',
   youtube: 'https://www.google.com/s2/favicons?domain=youtube.com&sz=64',
+  twitch: 'https://www.google.com/s2/favicons?domain=twitch.tv&sz=64',
   'youtube-music': 'https://www.google.com/s2/favicons?domain=music.youtube.com&sz=64',
 });
 
@@ -511,6 +512,7 @@ function mixerIconToken(name) {
   if (!key) return 'A';
   if (key.includes('whatsapp')) return 'WA';
   if (key.includes('youtube')) return 'YT';
+  if (key.includes('twitch')) return 'TV';
   if (key.includes('spotify')) return 'SP';
   if (key.includes('chrome')) return 'CH';
   if (key.includes('discord')) return 'DC';
@@ -544,6 +546,7 @@ function detectMediaServiceTokenFromText(value) {
   if (/\bjellyfin\b|jellyfin\.local/.test(merged)) return 'jellyfin';
   if (/youtube\s*music|music\.youtube\.com|ytmusic|cinhimbn[a-z]*ghhklpknlkffjgod/.test(merged)) return 'youtube-music';
   if (/youtube/.test(merged)) return 'youtube';
+  if (/twitch|twitch\.tv/.test(merged)) return 'twitch';
   return '';
 }
 
@@ -587,6 +590,9 @@ function resolveBrowserMediaContext(app, presentation) {
   }
   if (serviceToken === 'youtube') {
     return { displayName: 'YouTube', iconSrc: MIXER_MEDIA_SERVICE_ICON_BY_TOKEN.youtube || '' };
+  }
+  if (serviceToken === 'twitch') {
+    return { displayName: 'Twitch TV', iconSrc: MIXER_MEDIA_SERVICE_ICON_BY_TOKEN.twitch || '' };
   }
   return null;
 }

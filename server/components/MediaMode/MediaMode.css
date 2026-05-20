@@ -1,3 +1,201 @@
+.media-apps-overlay[hidden] {
+  display: none !important;
+}
+
+.media-apps-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 205;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background:
+    radial-gradient(78% 88% at 50% 12%, rgba(var(--accent-rgb),0.16), transparent 62%),
+    rgba(0,0,0,0.58);
+  backdrop-filter: blur(16px) saturate(1.12);
+}
+
+.media-apps-panel {
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid rgba(255,255,255,0.11);
+  border-radius: 16px;
+  background:
+    radial-gradient(105% 92% at 12% 0%, rgba(82,170,255,0.14), transparent 54%),
+    linear-gradient(145deg, rgba(20,27,31,0.97), rgba(7,11,14,0.98));
+  box-shadow: 0 24px 84px rgba(0,0,0,0.66), 0 0 60px rgba(var(--accent-rgb),0.1);
+}
+
+.media-apps-head {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.media-apps-title-wrap {
+  min-width: 0;
+}
+
+.media-apps-kicker {
+  color: #9fb2ab;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.media-apps-title {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 19px;
+  line-height: 1.08;
+  font-weight: 950;
+  letter-spacing: 0;
+}
+
+.media-apps-close {
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  background: rgba(14,20,20,0.58);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.media-apps-close:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+.media-apps-close svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.media-apps-grid {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.media-app-tile {
+  --media-app-rgb: 110, 142, 170;
+  min-width: 0;
+  min-height: 150px;
+  appearance: none;
+  border: 1px solid rgba(var(--media-app-rgb),0.36);
+  border-radius: 12px;
+  padding: 16px 12px 14px;
+  color: #fff;
+  background:
+    radial-gradient(92% 86% at 50% 12%, rgba(var(--media-app-rgb),0.26), transparent 62%),
+    linear-gradient(145deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015)),
+    rgba(7, 11, 14, 0.82);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+  cursor: pointer;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  place-items: center;
+  gap: 10px;
+  text-align: center;
+  transition: transform 0.14s ease, border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.media-app-tile:hover {
+  transform: translateY(-1px);
+  border-color: rgba(var(--media-app-rgb),0.68);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.11), 0 14px 32px rgba(0,0,0,0.24);
+}
+
+.media-app-tile:active {
+  transform: scale(0.985);
+}
+
+.media-app-tile:focus-visible {
+  outline: 2px solid rgba(var(--media-app-rgb),0.62);
+  outline-offset: 2px;
+}
+
+.media-app-tile.active {
+  background:
+    radial-gradient(92% 86% at 50% 12%, rgba(var(--media-app-rgb),0.34), transparent 62%),
+    linear-gradient(145deg, rgba(255,255,255,0.07), rgba(255,255,255,0.02)),
+    rgba(10, 16, 20, 0.92);
+  border-color: rgba(var(--media-app-rgb),0.78);
+}
+
+.media-app-icon {
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+}
+
+.media-app-icon img,
+.media-app-icon svg {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 8px 18px rgba(0,0,0,0.34));
+}
+
+.media-app-name {
+  width: 100%;
+  min-width: 0;
+  color: #f7fbff;
+  font-size: 13.5px;
+  line-height: 1.15;
+  font-weight: 850;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.media-app-jellyfin { --media-app-rgb: 170, 110, 255; }
+.media-app-youtube { --media-app-rgb: 255, 0, 51; }
+.media-app-twitch { --media-app-rgb: 145, 70, 255; }
+.media-app-youtube-music { --media-app-rgb: 255, 56, 72; }
+
+@media (max-height: 540px) {
+  .media-apps-panel {
+    width: min(560px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+  }
+
+  .media-apps-grid {
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .media-app-tile {
+    min-height: 112px;
+    padding: 12px 10px 10px;
+  }
+
+  .media-app-icon {
+    width: 54px;
+    height: 54px;
+  }
+
+  .media-app-name {
+    font-size: 12.5px;
+  }
+}
+
 .media-mode-overlay {
   position: fixed;
   inset: 0;

@@ -29,6 +29,7 @@ const DASHBOARD_CARD_IDS = Object.freeze({
 });
 const DASHBOARD_WIDGET_SIZES = Object.freeze(['compact', 'normal', 'wide', 'tall', 'large', 'full']);
 const DASHBOARD_CARD_SIZES = Object.freeze(['compact', 'normal', 'wide']);
+const SETTINGS_MEDIA_MODE_APP_IDS = Object.freeze(['jellyfin', 'youtube', 'twitch', 'youtube-music']);
 const DEFAULT_DASHBOARD_LAYOUT = Object.freeze({
   widgets: Object.freeze({
     media: Object.freeze({ order: 0, size: 'tall', visible: true }),
@@ -80,7 +81,7 @@ const DEFAULT_HUB_SETTINGS = Object.freeze({
     feedUrl: '',
     refreshMinutes: SETTINGS_CALENDAR_SYNC_DEFAULT_REFRESH_MINUTES,
   }),
-  mediaMode: Object.freeze({ url: '' }),
+  mediaMode: Object.freeze({ url: '', appId: 'jellyfin' }),
   quickOutputSwitch: Object.freeze({ deviceAId: '', deviceBId: '' }),
   quickShortcut: Object.freeze({ keys: '' }),
   dashboardLayout: DEFAULT_DASHBOARD_LAYOUT,
@@ -223,7 +224,8 @@ function sanitizeMediaModeUrl(value) {
 
 function normalizeMediaModeSettings(value) {
   const source = value && typeof value === 'object' ? value : {};
-  return { url: sanitizeMediaModeUrl(source.url) };
+  const appId = SETTINGS_MEDIA_MODE_APP_IDS.includes(source.appId) ? source.appId : 'jellyfin';
+  return { url: sanitizeMediaModeUrl(source.url), appId };
 }
 
 function sanitizeOutputDeviceId(value) {

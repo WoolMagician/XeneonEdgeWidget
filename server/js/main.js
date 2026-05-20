@@ -241,6 +241,12 @@ document.addEventListener('keydown', e => {
       setDashboardLayoutEditMode(false);
       return;
     }
+    const mediaApps = document.getElementById('media-apps-overlay');
+    if (mediaApps && !mediaApps.hidden && typeof closeMediaAppsOverlay === 'function') {
+      e.preventDefault();
+      closeMediaAppsOverlay();
+      return;
+    }
     const mediaMode = document.getElementById('media-mode-overlay');
     if (mediaMode && mediaMode.classList.contains('active')) {
       e.preventDefault();

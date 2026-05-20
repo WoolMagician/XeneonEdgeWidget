@@ -46,6 +46,18 @@ const CALENDAR_HOLIDAY_FEED_URL = 'https://calendar.google.com/calendar/ical/it.
 const CALENDAR_HOLIDAY_REFRESH_MS = 12 * 60 * 60 * 1000;
 const COUNTER_HISTORY_DAYS_MAX = 30;
 const COUNTER_MAX_SESSIONS = 5000;
+const SETTINGS_MEDIA_MODE_APP_IDS = Object.freeze(['jellyfin', 'youtube', 'twitch', 'youtube-music']);
+const MEDIA_MODE_STATIC_APP_URLS = Object.freeze({
+  youtube: 'https://www.youtube.com/',
+  twitch: 'https://www.twitch.tv/',
+  'youtube-music': 'https://music.youtube.com/',
+});
+const MEDIA_MODE_APP_NAMES = Object.freeze({
+  jellyfin: 'Jellyfin',
+  youtube: 'YouTube',
+  twitch: 'Twitch TV',
+  'youtube-music': 'YouTube Music',
+});
 const NEWS_SOURCE_DOMAIN_OVERRIDES = new Map([
   ['ansa', 'ansa.it'],
   ['ansait', 'ansa.it'],
@@ -2154,6 +2166,7 @@ function displayAppName(name) {
   if (/spotify/i.test(value)) return 'Spotify';
   if (/youtube\s*music|music\.youtube\.com|ytmusic|cinhimbn[a-z]*ghhklpknlkffjgod/i.test(value)) return 'YouTube Music';
   if (/youtube/i.test(value)) return 'YouTube';
+  if (/twitch|twitch\.tv/i.test(value)) return 'Twitch TV';
   if (/chrome|msedge|edge|firefox|brave|opera/i.test(value)) return 'YouTube';
   if (/zunemusic|zunevideo|microsoftmediaplayer|windowsmediaplayer/i.test(value)) return 'Lettore Multimediale';
   if (!name) return 'Media';
@@ -3973,6 +3986,24 @@ function isBrowserHostToken(value) {
 }
 
 function mediaModeUrlFromSettings(settings) {
+  const mediaMode = settings && settings.mediaMode ? settings.mediaMode : {};
+  const appId = mediaModeAppIdFromSettings(settings);
+  if (appId !== 'jellyfin') return MEDIA_MODE_STATIC_APP_URLS[appId] || '';
+  return String(mediaMode.url || '').trim();
+}
+
+function mediaModeAppIdFromSettings(settings) {
+  const value = settings && settings.mediaMode ? settings.mediaMode.appId : '';
+  return SETTINGS_MEDIA_MODE_APP_IDS.includes(value) ? value : 'jellyfin';
+}
+
+function mediaModeAppNameFromId(appId) {
+  return MEDIA_MODE_APP_NAMES[appId] || MEDIA_MODE_APP_NAMES.jellyfin;
+}
+
+function mediaModeUrlForAppId(appId, settings) {
+  const id = SETTINGS_MEDIA_MODE_APP_IDS.includes(appId) ? appId : 'jellyfin';
+  if (id !== 'jellyfin') return MEDIA_MODE_STATIC_APP_URLS[id] || '';
   const value = settings && settings.mediaMode ? settings.mediaMode.url : '';
   return String(value || '').trim();
 }
@@ -3980,6 +4011,26 @@ function mediaModeUrlFromSettings(settings) {
 function hasConfiguredMediaModeUrl(value) {
   const url = String(value || '').trim();
   return /^https?:\/\//i.test(url);
+}
+
+function openUrlWithDefaultHandler(url) {
+  return new Promise((resolve, reject) => {
+    const safeUrl = String(url || '').trim();
+    if (!hasConfiguredMediaModeUrl(safeUrl)) {
+      reject(new Error('Invalid URL'));
+      return;
+    }
+    const child = spawn('cmd.exe', ['/c', 'start', '', safeUrl], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve(true);
+    });
+  });
 }
 
 function hasActiveQtWebEngineSession(rawSnapshot) {
@@ -3997,21 +4048,22 @@ function hasActiveQtWebEngineSession(rawSnapshot) {
   });
 }
 
-function buildMediaFallbackFromEmbeddedSession(rawSnapshot, mediaModeUrl, error) {
+function buildMediaFallbackFromEmbeddedSession(rawSnapshot, mediaModeUrl, error, mediaModeAppId = 'jellyfin') {
   const url = String(mediaModeUrl || '').trim();
   if (!hasConfiguredMediaModeUrl(url)) return null;
   if (!hasActiveQtWebEngineSession(rawSnapshot)) return null;
 
-  let title = 'Jellyfin attivo';
+  const appName = mediaModeAppNameFromId(mediaModeAppId);
+  let title = `${appName} attivo`;
   try {
     const parsed = new URL(url);
-    if (parsed && parsed.hostname) title = `Jellyfin su ${parsed.hostname}`;
+    if (parsed && parsed.hostname) title = `${appName} su ${parsed.hostname}`;
   } catch {}
 
   return {
     active: true,
-    app: 'Jellyfin',
-    source: 'Jellyfin',
+    app: appName,
+    source: appName,
     title,
     artist: '',
     album: '',
@@ -4026,7 +4078,7 @@ function buildMediaFallbackFromEmbeddedSession(rawSnapshot, mediaModeUrl, error)
 
 function buildMediaFallbackFromAudioApps(apps, error, windowApps = null) {
   if (!Array.isArray(apps) || apps.length === 0) return null;
-  const isMediaLike = value => /spotify|chrome|edge|firefox|brave|opera|browser|youtube|jellyfin|vlc|mpv|netflix|prime video|disney/i.test(String(value || ''));
+  const isMediaLike = value => /spotify|chrome|edge|firefox|brave|opera|browser|youtube|jellyfin|twitch|vlc|mpv|netflix|prime video|disney/i.test(String(value || ''));
   const jellyfinWindowTokens = collectJellyfinWindowTokens(windowApps);
 
   const candidates = apps
@@ -4134,8 +4186,10 @@ async function getMediaFallback(error) {
   } catch {}
 
   let mediaModeUrl = '';
+  let mediaModeAppId = 'jellyfin';
   try {
     const settings = await readHubSettings();
+    mediaModeAppId = mediaModeAppIdFromSettings(settings);
     mediaModeUrl = mediaModeUrlFromSettings(settings);
   } catch {}
 
@@ -4144,7 +4198,7 @@ async function getMediaFallback(error) {
     const fromAudioCtl = buildMediaFallbackFromAudioApps(audioSnapshot && audioSnapshot.apps, error, windowApps);
     if (fromAudioCtl) return fromAudioCtl;
     if ((Date.now() - Number(lastAudioCtlRawUpdatedAt || 0)) <= 15000) {
-      const fromEmbedded = buildMediaFallbackFromEmbeddedSession(lastAudioCtlRawSnapshot, mediaModeUrl, error);
+      const fromEmbedded = buildMediaFallbackFromEmbeddedSession(lastAudioCtlRawSnapshot, mediaModeUrl, error, mediaModeAppId);
       if (fromEmbedded) return fromEmbedded;
     }
   } catch {}
@@ -4153,7 +4207,7 @@ async function getMediaFallback(error) {
   if (fromCachedAudio) return fromCachedAudio;
 
   if ((Date.now() - Number(lastAudioCtlRawUpdatedAt || 0)) <= 15000) {
-    const fromEmbeddedCached = buildMediaFallbackFromEmbeddedSession(lastAudioCtlRawSnapshot, mediaModeUrl, error);
+    const fromEmbeddedCached = buildMediaFallbackFromEmbeddedSession(lastAudioCtlRawSnapshot, mediaModeUrl, error, mediaModeAppId);
     if (fromEmbeddedCached) return fromEmbeddedCached;
   }
 
@@ -5196,7 +5250,7 @@ const DEFAULT_HUB_SETTINGS = Object.freeze({
     feedUrl: '',
     refreshMinutes: CALENDAR_SYNC_DEFAULT_REFRESH_MINUTES,
   }),
-  mediaMode: Object.freeze({ url: '' }),
+  mediaMode: Object.freeze({ url: '', appId: 'jellyfin' }),
   quickOutputSwitch: Object.freeze({ deviceAId: '', deviceBId: '' }),
   quickShortcut: Object.freeze({ keys: '' }),
   dashboardLayout: DEFAULT_DASHBOARD_LAYOUT,
@@ -5310,7 +5364,8 @@ function sanitizeMediaModeUrl(value) {
 
 function normalizeSettingsMediaMode(value) {
   const source = value && typeof value === 'object' ? value : {};
-  return { url: sanitizeMediaModeUrl(source.url) };
+  const appId = SETTINGS_MEDIA_MODE_APP_IDS.includes(source.appId) ? source.appId : 'jellyfin';
+  return { url: sanitizeMediaModeUrl(source.url), appId };
 }
 
 function sanitizeSettingsOutputDeviceId(value) {
@@ -6052,6 +6107,26 @@ const server = http.createServer(async (req, res) => {
   } else if (reqPath === '/media' && req.method === 'GET') {
     try   { json(await getMediaInfo()); }
     catch (e) { err500(e.message); }
+
+  } else if (reqPath === '/media/open-app' && req.method === 'POST') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const appId = String(body && body.appId || '').trim();
+      if (!SETTINGS_MEDIA_MODE_APP_IDS.includes(appId)) {
+        res.writeHead(400);
+        res.end('Invalid media app');
+        return;
+      }
+      const settings = await readHubSettings();
+      const targetUrl = mediaModeUrlForAppId(appId, settings);
+      if (!hasConfiguredMediaModeUrl(targetUrl)) {
+        res.writeHead(400);
+        res.end('Media app URL is not configured');
+        return;
+      }
+      await openUrlWithDefaultHandler(targetUrl);
+      json({ ok: true, appId });
+    } catch (e) { err500(e.message); }
 
   } else if (reqPath === '/media/playpause' && (req.method === 'POST' || req.method === 'GET')) {
     try   { json(await mediaAction('playpause')); }

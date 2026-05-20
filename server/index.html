@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="components/DayModal/DayModal.css">
 <link rel="stylesheet" href="components/EventToast/EventToast.css">
 <link rel="stylesheet" href="components/MicPanel/MicPanel.css?v=20260518-bar-gradient-fix2">
-<link rel="stylesheet" href="components/ShortcutPanel/ShortcutPanel.css?v=20260517-halo-corefill">
+<link rel="stylesheet" href="components/ShortcutPanel/ShortcutPanel.css?v=20260520-media-apps">
 <link rel="stylesheet" href="components/HourCounter/HourCounter.css?v=20260518-counter-touch-timepicker">
 <link rel="stylesheet" href="components/TasksPanel/TasksPanel.css">
 <link rel="stylesheet" href="components/CustomSelect/CustomSelect.css">
@@ -23,7 +23,7 @@
 <link rel="stylesheet" href="components/AudioSection/AudioSection.css?v=20260518-bar-gradient-fix2">
 <link rel="stylesheet" href="components/DevicePicker/DevicePicker.css">
 <link rel="stylesheet" href="components/AppSwitcher/AppSwitcher.css">
-<link rel="stylesheet" href="components/MediaMode/MediaMode.css">
+<link rel="stylesheet" href="components/MediaMode/MediaMode.css?v=20260520-media-apps">
 <link rel="stylesheet" href="components/SettingsModal/SettingsModal.css">
 <link rel="stylesheet" href="components/WeatherModal/WeatherModal.css">
 <link rel="stylesheet" href="components/DashboardLayout/DashboardLayout.css">
@@ -281,13 +281,15 @@
               </button>
             </div>
           </div>
-          <button class="shortcut-jellyfin-tile" id="media-mode-toggle" type="button" onclick="toggleMediaMode()" data-i18n-title="tip_media_mode" title="Modalita media" aria-pressed="false">
-            <span class="shortcut-jellyfin-wrap" aria-hidden="true">
-              <span class="shortcut-jellyfin-ring"></span>
-              <span class="shortcut-jellyfin-ring2"></span>
-              <span class="shortcut-jellyfin-glow"></span>
-              <span class="shortcut-jellyfin-core">
-                <img class="shortcut-jellyfin-icon" src="https://upload.wikimedia.org/wikipedia/commons/4/41/Jellyfin_-_icon-transparent.svg?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=original" alt="">
+          <button class="shortcut-media-apps-tile" id="media-mode-toggle" type="button" onclick="toggleMediaAppsOverlay()" data-i18n-title="tip_media_mode" title="App media" aria-pressed="false" aria-expanded="false" aria-controls="media-apps-overlay">
+            <span class="shortcut-media-apps-wrap" aria-hidden="true">
+              <span class="shortcut-media-apps-ring"></span>
+              <span class="shortcut-media-apps-ring2"></span>
+              <span class="shortcut-media-apps-glow"></span>
+              <span class="shortcut-media-apps-core">
+                <svg class="shortcut-media-apps-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h3A2.5 2.5 0 0 1 12 5.5v3A2.5 2.5 0 0 1 9.5 11h-3A2.5 2.5 0 0 1 4 8.5v-3Zm10 0A2.5 2.5 0 0 1 16.5 3h1A2.5 2.5 0 0 1 20 5.5v3a2.5 2.5 0 0 1-2.5 2.5h-1A2.5 2.5 0 0 1 14 8.5v-3ZM4 15.5A2.5 2.5 0 0 1 6.5 13h1A2.5 2.5 0 0 1 10 15.5v3A2.5 2.5 0 0 1 7.5 21h-1A2.5 2.5 0 0 1 4 18.5v-3Zm9.5-1.65a1 1 0 0 1 1.03.04l5 3.2a1 1 0 0 1 0 1.68l-5 3.2A1 1 0 0 1 13 21.13v-6.4a1 1 0 0 1 .5-.87Z"/>
+                </svg>
               </span>
             </span>
           </button>
@@ -488,10 +490,50 @@
   </main>
 </div>
 
+<div class="media-apps-overlay" id="media-apps-overlay" hidden onclick="if(event.target===this)closeMediaAppsOverlay()">
+  <section class="media-apps-panel" role="dialog" aria-modal="true" aria-labelledby="media-apps-title">
+    <div class="media-apps-head">
+      <div class="media-apps-title-wrap">
+        <div class="media-apps-kicker" data-i18n="media_apps_kicker">Media</div>
+        <h2 class="media-apps-title" id="media-apps-title" data-i18n="media_apps_title">App media</h2>
+      </div>
+      <button class="media-apps-close" type="button" onclick="closeMediaAppsOverlay()" data-i18n-title="media_apps_close" title="Chiudi">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm11.2 0L19 6.4 6.4 19 5 17.6 17.6 5Z"/></svg>
+      </button>
+    </div>
+    <div class="media-apps-grid">
+      <button class="media-app-tile media-app-jellyfin" type="button" data-media-app="jellyfin" onclick="openMediaModeApp('jellyfin')" title="Jellyfin">
+        <span class="media-app-icon">
+          <img src="https://upload.wikimedia.org/wikipedia/commons/4/41/Jellyfin_-_icon-transparent.svg" alt="">
+        </span>
+        <span class="media-app-name">Jellyfin</span>
+      </button>
+      <button class="media-app-tile media-app-youtube" type="button" data-media-app="youtube" onclick="openMediaModeApp('youtube')" title="YouTube">
+        <span class="media-app-icon">
+          <svg viewBox="0 0 64 45" aria-hidden="true"><rect x="2" y="4" width="60" height="37" rx="10" fill="#ff0033"/><path d="M27 14.5v16l16-8-16-8Z" fill="#fff"/></svg>
+        </span>
+        <span class="media-app-name">YouTube</span>
+      </button>
+      <button class="media-app-tile media-app-twitch" type="button" data-media-app="twitch" onclick="openMediaModeApp('twitch')" title="Twitch TV">
+        <span class="media-app-icon">
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M7 5h34v24L30 40h-8l-6 6v-6H7V5Z" fill="#9146ff"/><path d="M12 10h24v16l-7 7h-9l-5 5v-5h-3V10Z" fill="#fff"/><path d="M19 16h4v10h-4V16Zm10 0h4v10h-4V16Z" fill="#9146ff"/></svg>
+        </span>
+        <span class="media-app-name">Twitch TV</span>
+      </button>
+      <button class="media-app-tile media-app-youtube-music" type="button" data-media-app="youtube-music" onclick="openMediaModeApp('youtube-music')" title="YouTube Music">
+        <span class="media-app-icon">
+          <svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="28" fill="#ff0033"/><circle cx="32" cy="32" r="18" fill="none" stroke="#fff" stroke-opacity=".34" stroke-width="5"/><path d="M27 20v24l19-12-19-12Z" fill="#fff"/></svg>
+        </span>
+        <span class="media-app-name">YouTube Music</span>
+      </button>
+    </div>
+  </section>
+</div>
+
 <div class="media-mode-overlay" id="media-mode-overlay" aria-hidden="true">
   <div class="media-mode-shell">
     <div class="media-mode-stage">
-      <iframe id="media-mode-frame" class="media-mode-frame" title="Jellyfin" loading="eager" referrerpolicy="strict-origin-when-cross-origin" allow="autoplay; fullscreen; picture-in-picture" hidden></iframe>
+      <iframe id="media-mode-frame" class="media-mode-frame" title="Media app" loading="eager" referrerpolicy="strict-origin-when-cross-origin" allow="autoplay; fullscreen; picture-in-picture" hidden></iframe>
       <div class="media-mode-empty" id="media-mode-empty">
         <div class="media-mode-empty-title" data-i18n="media_mode_missing_url">Imposta un URL Jellyfin nelle impostazioni.</div>
         <button class="settings-btn primary" type="button" onclick="openMediaModeSettings()" data-i18n="settings_open">Impostazioni</button>
@@ -558,11 +600,11 @@
       <div class="settings-group settings-media-group">
         <div class="settings-group-head">
           <span data-i18n="settings_media_mode">Modalita media</span>
-          <span class="settings-hint" data-i18n="settings_media_mode_hint">Sessione Jellyfin</span>
+          <span class="settings-hint" data-i18n="settings_media_mode_hint">Jellyfin e app web</span>
         </div>
         <div class="settings-grid">
           <label class="settings-row full">
-            <span class="settings-label-line"><span data-i18n="settings_media_url">URL Jellyfin</span><span class="settings-hint" data-i18n="settings_media_url_hint">usato dal toggle media</span></span>
+            <span class="settings-label-line"><span data-i18n="settings_media_url">URL Jellyfin</span><span class="settings-hint" data-i18n="settings_media_url_hint">usato dal tile Jellyfin</span></span>
             <input class="settings-text-input" id="settings-media-url" type="url" maxlength="2048" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings_media_url_placeholder" placeholder="https://jellyfin.local/web/#/home.html" oninput="updateMediaModeUrl(this.value, false)" onchange="updateMediaModeUrl(this.value, true)">
           </label>
           <label class="settings-row full">
@@ -902,12 +944,12 @@
 <script src="js/utils.js"></script>
 <script src="js/state.js"></script>
 <script src="js/status.js"></script>
-<script src="js/i18n.js?v=20260518-counter-touch-timepicker"></script>
+<script src="js/i18n.js?v=20260520-media-apps"></script>
 <script src="js/audio-feedback.js"></script>
 <script src="js/clock.js"></script>
 <script src="js/news.js"></script>
 <script src="js/mic.js"></script>
-<script src="js/volume.js?v=20260518-qtwebengine-filter-restore1"></script>
+<script src="js/volume.js?v=20260520-media-apps"></script>
 <script src="js/media.js?v=20260518-bar-gradient-fix2"></script>
 <script src="js/calendar.js"></script>
 <script src="js/system.js"></script>
@@ -916,9 +958,9 @@
 <script src="js/hour-counter.js?v=20260518-counter-touch-timepicker"></script>
 <script src="js/picker.js"></script>
 <script src="js/app-switcher.js"></script>
-<script src="js/settings.js"></script>
-<script src="js/media-mode.js"></script>
+<script src="js/settings.js?v=20260520-media-apps"></script>
+<script src="js/media-mode.js?v=20260520-media-apps2"></script>
 <script src="js/dashboard-layout.js"></script>
-<script src="js/main.js?v=20260518-sse-flicker-fix"></script>
+<script src="js/main.js?v=20260520-media-apps"></script>
 </body>
 </html>
