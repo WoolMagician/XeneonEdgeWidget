@@ -19,6 +19,10 @@ internal static class Program
     private static readonly PROPERTYKEY PkeyDeviceFriendlyName = new(new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"), 14);
     private static readonly PROPERTYKEY PkeyDeviceDesc = new(new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"), 2);
     private static readonly PROPERTYKEY PkeyDeviceInterfaceFriendlyName = new(new Guid("026E516E-B814-414B-83CD-856D6FEF4822"), 2);
+    private const string EndpointFriendlyNameProperty = "{a45c254e-df1c-4efd-8020-67d146a850e0},14";
+    private const string EndpointDeviceDescProperty = "{a45c254e-df1c-4efd-8020-67d146a850e0},2";
+    private const string EndpointInterfaceFriendlyNameProperty = "{026e516e-b814-414b-83cd-856d6fef4822},2";
+    private const string EndpointBusReportedDeviceNameProperty = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -1272,9 +1276,11 @@ internal static class Program
                 if (device.GetId(out var endpointId) != S_OK || string.IsNullOrWhiteSpace(endpointId)) continue;
                 device.GetState(out var stateRaw);
 
-                var friendlyName = ReadEndpointRegistryValue(flow, endpointId, "{a45c254e-df1c-4efd-8020-67d146a850e0},14");
-                var deviceDesc = ReadEndpointRegistryValue(flow, endpointId, "{a45c254e-df1c-4efd-8020-67d146a850e0},2");
-                var interfaceName = ReadEndpointRegistryValue(flow, endpointId, "{026e516e-b814-414b-83cd-856d6fef4822},2");
+                var friendlyName = ReadEndpointRegistryValue(flow, endpointId, EndpointFriendlyNameProperty);
+                var deviceDesc = ReadEndpointRegistryValue(flow, endpointId, EndpointDeviceDescProperty);
+                var interfaceName = FirstNonEmpty(
+                    ReadEndpointRegistryValue(flow, endpointId, EndpointInterfaceFriendlyNameProperty),
+                    ReadEndpointRegistryValue(flow, endpointId, EndpointBusReportedDeviceNameProperty));
 
                 // Keep endpoint metadata reads in the registry path only.
                 // Some driver/device combinations can crash the CLR in COM
@@ -1282,8 +1288,11 @@ internal static class Program
                 // Stability is more important here; endpointId remains as
                 // deterministic fallback when registry values are missing.
 
-                var displayName = FirstNonEmpty(friendlyName, deviceDesc, interfaceName, endpointId);
-                var label = FirstNonEmpty(deviceDesc, interfaceName, displayName);
+                var endpointName = FirstNonEmpty(friendlyName, deviceDesc);
+                var displayName = IsGenericEndpointName(endpointName, flow)
+                    ? FirstNonEmpty(interfaceName, endpointName, endpointId)
+                    : FirstNonEmpty(endpointName, interfaceName, endpointId);
+                var label = FirstDistinctNonEmpty(displayName, endpointName, interfaceName, endpointId);
 
                 var volumePercent = 0;
                 var muted = false;
@@ -1625,6 +1634,54 @@ internal static class Program
             if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
         }
         return string.Empty;
+    }
+
+    private static string FirstDistinctNonEmpty(string primary, params string[] values)
+    {
+        foreach (var value in values)
+        {
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            var trimmed = value.Trim();
+            if (!string.Equals(trimmed, primary, StringComparison.OrdinalIgnoreCase)) return trimmed;
+        }
+        return FirstNonEmpty(values);
+    }
+
+    private static bool IsGenericEndpointName(string value, EDataFlow flow)
+    {
+        var token = NormalizeEndpointNameToken(value);
+        if (string.IsNullOrWhiteSpace(token)) return true;
+
+        if (flow == EDataFlow.Capture)
+        {
+            return token is "microfono" or "microphone" or "ingresso" or "input";
+        }
+
+        return token is
+            "altoparlanti" or
+            "altoparlante" or
+            "speakers" or
+            "speaker" or
+            "cuffie" or
+            "cuffiaauricolare" or
+            "headphones" or
+            "headphone" or
+            "auricolare" or
+            "auricolari" or
+            "auricolareemicrotelefono" or
+            "uscitadigitale" or
+            "audiodigitale" or
+            "audiodigitalehdmi" or
+            "digitalaudio" or
+            "digitalaudiohdmi" or
+            "headsetearphone" or
+            "headset";
+    }
+
+    private static string NormalizeEndpointNameToken(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        return new string(value.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
     }
 
     private static string ReadDevicePropertyString(IMMDevice device, PROPERTYKEY key)
